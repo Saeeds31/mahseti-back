@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/coupons",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Coupons\\": "app/",
+            "Modules\\Coupons\\Database\\Factories\\": "database/factories/",
+            "Modules\\Coupons\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Coupons\\Tests\\": "tests/"
+        }
+    }
+}

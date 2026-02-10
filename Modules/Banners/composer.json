@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/banners",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Banners\\": "app/",
+            "Modules\\Banners\\Database\\Factories\\": "database/factories/",
+            "Modules\\Banners\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Banners\\Tests\\": "tests/"
+        }
+    }
+}

@@ -1,0 +1,11 @@
+{
+    "name": "Specifications",
+    "alias": "specifications",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Specifications\\Providers\\SpecificationsServiceProvider"
+    ],
+    "files": []
+}

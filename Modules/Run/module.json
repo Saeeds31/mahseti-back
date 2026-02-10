@@ -1,0 +1,11 @@
+{
+    "name": "Run",
+    "alias": "run",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Run\\Providers\\RunServiceProvider"
+    ],
+    "files": []
+}
