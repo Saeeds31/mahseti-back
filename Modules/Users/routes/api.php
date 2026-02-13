@@ -8,6 +8,7 @@ use Modules\Users\Http\Controllers\UsersController;
 Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::apiResource('users', UsersController::class)->names('users');
     Route::apiResource('roles', RolesController::class)->names('roles');
+    Route::get('/admin-info', [UsersController::class, 'adminInfo'])->name("adminInfo");
     Route::get('/user-managers', [UsersController::class, 'managerIndex'])->name("managerIndex");
     Route::post('/user-managers/assign-roles', [RolesController::class, 'assignRoles'])->name("assignRoles");
     Route::get('/all-permissions', [RolesController::class, 'allPermissions'])->name("allPermissions");

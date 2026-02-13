@@ -59,6 +59,8 @@ class RunController extends Controller
             'coupon'   => 'کد تخفیف',
             'Menu'   => 'منو',
             'order'   => 'سفارش',
+            'city'   => 'شهر',
+            'province'   => 'استان',
             'product'   => 'محصول',
             'Setting'   => 'تنظیمات',
             'contact'   => 'فرم ارتباط باما',
@@ -91,16 +93,17 @@ class RunController extends Controller
         $others = [
             'dashboard_view' => 'داشبورد',
             'report_users' => 'گزارش کاربران',
-            'report_courses' => 'گزارش دوره ها',
+            'report_orders' => 'گزارش سفارش ها',
+            'order_today' => 'سفارشات روز',
+            'report_products' => 'گزارش محصولات',
             'comment_blogs' => 'کامنت مقالات',
+            'comment_product' => 'کامنت مقالات',
             'role_permission' => 'دسترسی نقش',
             'notifications_user' => 'اعلان کاربران',
             'notification_article' => 'اعلان مقالات',
             'notification_product' => 'اعلان محصولات',
             'notification_content' => 'اعلان محتواها',
             'notification_order' => 'اعلان سفارشات',
-
-
         ];
         foreach ($others as $pername => $perPersianName) {
             Permission::updateOrCreate(

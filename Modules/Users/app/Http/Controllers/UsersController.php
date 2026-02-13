@@ -13,6 +13,16 @@ use Modules\Wallet\Models\Wallet;
 
 class UsersController extends Controller
 {
+    public function adminInfo(Request $request)
+    {
+        $user = $request->user();
+        $permissions = $user->permissions;
+        return response()->json([
+            'message' => 'اطلاعات ادمین',
+            'user' => $user,
+            'permissions' => $permissions
+        ]);
+    }
     public function updateProfile(Request $request)
     {
         $user = $request->user();
