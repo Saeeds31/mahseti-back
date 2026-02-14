@@ -97,7 +97,7 @@ class RunController extends Controller
             'order_today' => 'سفارشات روز',
             'report_products' => 'گزارش محصولات',
             'comment_blogs' => 'کامنت مقالات',
-            'comment_product' => 'کامنت مقالات',
+            'comment_products' => 'کامنت مقالات',
             'role_permission' => 'دسترسی نقش',
             'notifications_user' => 'اعلان کاربران',
             'notification_article' => 'اعلان مقالات',
