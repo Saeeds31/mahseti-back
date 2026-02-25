@@ -67,6 +67,26 @@ class FrontController extends Controller
             'data'    => $data
         ], 200);
     }
+   
+    public function HomeProducts()
+    {
+        $categories = Category::with([
+            'products' => function ($q) {
+                $q->where('status', 'published')->latest()->take(8);
+            }
+        ])
+            ->where('show_products_in_home', true)
+            ->get();
+
+        $result = $categories->map(function ($category) {
+            return [
+                'category' => $category,
+                'products' => $category->products,
+            ];
+        });
+
+        return response()->json($result);
+    }
     public function home()
     {
         $data = [];

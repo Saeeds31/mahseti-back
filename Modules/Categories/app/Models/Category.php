@@ -9,6 +9,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 class Category extends Model
 {
     protected $fillable = ['title', 'meta_description', 'meta_title', 'slug', 'main_image', 'slug', 'description', 'icon', 'parent_id', 'show_in_home', 'show_products_in_home'];
+    protected $casts = [
+        'show_in_home' => 'boolean',
+        'show_products_in_home' => 'boolean',
+
+    ];
     // رابطه با محصولات
     public function products()
     {
