@@ -12,7 +12,7 @@ class ShippingRangeUpdateRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'shipping_method_id' => ['sometimes', 'exists:shipping_methods,id'],
+            'shipping_method_id' => ['sometimes', 'exists:shippings,id'],
             'province_id'        => ['sometimes', 'exists:provinces,id'],
             'city_id'            => ['sometimes', 'nullable', 'exists:cities,id'],
             'cost'               => ['sometimes', 'integer', 'min:0'],

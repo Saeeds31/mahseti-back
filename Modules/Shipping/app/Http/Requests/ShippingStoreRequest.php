@@ -12,10 +12,16 @@ class ShippingStoreRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name'         => ['required', 'string', 'max:255'],
+            'title'         => ['required', 'string', 'max:255'],
+            'icon'         => ['nullable', 'file', 'max:1024'],
             'description'  => ['nullable', 'string'],
-            'default_cost' => ['nullable', 'integer', 'min:0'],
+            'priority'  => ['nullable', 'integer'],
+            'cost' => ['nullable', 'integer', 'min:0'],
             'status'       => ['nullable', 'boolean'],
+            'conditions' => 'nullable|array|min:1',
+            'conditions.*.condition' => 'nullable|string',
+            'conditions.*.type'  => 'nullable|string',
+            'conditions.*.value' => 'nullable|integer|min:0',
         ];
     }
 

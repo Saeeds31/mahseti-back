@@ -24,8 +24,8 @@ class ProductVariantController extends Controller
     public function store(ProductVariantStoreRequest $request, Product $product, NotificationService $notifications)
     {
         // حذف تنوع پیشفرض که در کنترلر محصول متد استور ساخته شده
-        $product->variants()->delete();
         $data = $request->validated();
+        $product->variants()->delete();
         $variants = [];
         foreach ($data['variants'] as $variantData) {
             $variant = $product->variants()->create([

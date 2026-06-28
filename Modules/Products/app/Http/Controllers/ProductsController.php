@@ -19,10 +19,15 @@ class ProductsController extends Controller
     // لیست محصولات
     public function index(Request $request)
     {
-        $query = Product::with(['categories', 'images', 'variants.values']);
+        $query = Product::with(['categories', 'images', 'variants.values'])->latest();
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%");
+            });
+        }
+        if ($status = $request->get('status')) {
+            $query->where(function ($q) use ($status) {
+                $q->where('status', $status);
             });
         }
         $products = $query->paginate(15);
@@ -166,6 +171,13 @@ class ProductsController extends Controller
     // حذف محصول
     public function destroy(Product $product, NotificationService $notifications)
     {
+        $order = OrderItem::where('product_id', $product->id)->exists();
+        if ($order) {
+            return response()->json([
+                'message' => 'برای این محصول یک سفارش ثبت شده و قابل حذف نیست',
+                'success' => false
+            ], 403);
+        }
         if ($product->main_image) {
             Storage::disk('public')->delete($product->main_image);
         }
@@ -176,13 +188,7 @@ class ProductsController extends Controller
             Storage::disk('public')->delete($img->path);
             $img->delete();
         }
-        $order = OrderItem::where('product_id', $product->id)->exists();
-        if ($order) {
-            return response()->json([
-                'message' => 'برای این محصول یک سفارش ثبت شده و قابل حذف نیست',
-                'success' => false
-            ], 403);
-        }
+
         $notifications->create(
             "حذف محصول",
             "محصول {$product->title} از سیستم حذف شد",
@@ -426,10 +432,8 @@ class ProductsController extends Controller
     public function similar($id)
     {
         $product = Product::with('categories:id')->findOrFail($id);
-
         // گرفتن ID دسته‌ها
         $categoryIds = $product->categories->pluck('id');
-
         // پیدا کردن محصولات مشابه
         $similar = Product::where('status', 'published')
             ->whereHas('categories', function ($q) use ($categoryIds) {
@@ -443,7 +447,6 @@ class ProductsController extends Controller
             ])
             ->limit(10)
             ->get();
-
         // اگر مشابه پیدا نشد → fallback
         if ($similar->isEmpty()) {
             $similar = Product::where('status', 'published')
@@ -453,7 +456,6 @@ class ProductsController extends Controller
                 ->limit(10)
                 ->get();
         }
-
         return response()->json([
             'success' => true,
             'data' => [

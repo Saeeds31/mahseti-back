@@ -13,6 +13,8 @@ class AttributeUpdateRequest extends FormRequest
     {
         return [
             'name' => ['sometimes', 'string', 'max:255'],
+            'value_type' => ['sometimes', 'string', 'max:255'],
+
         ];
     }
 

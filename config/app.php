@@ -1,13 +1,23 @@
 <?php
 
 return [
+    /*
+    |--------------------------------------------------------------------------
+    | Application Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | This URL is used by the application to redirect users to the frontend
+    | after payment or other operations.
+    |
+    */
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
 
     /*
     |--------------------------------------------------------------------------
     | Application Name
     |--------------------------------------------------------------------------
     |
-    | This value is the name of your application, which will be used when the
+    | This value is the name of your application, which will be raused when the
     | framework needs to place the application's name in a notification or
     | other UI elements where an application name needs to be displayed.
     |

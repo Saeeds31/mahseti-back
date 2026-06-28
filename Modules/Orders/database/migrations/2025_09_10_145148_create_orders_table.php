@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->foreignId('address_id')->constrained('addresses')->cascadeOnDelete();
-            $table->foreignId('shipping_method_id')->constrained('shipping_methods')->cascadeOnDelete()->nullable();
+            $table->foreignId('shipping_id')->constrained('shippings')->cascadeOnDelete()->nullable();
             $table->bigInteger('subtotal');
             $table->bigInteger('discount_amount')->default(0);
             $table->bigInteger('shipping_cost')->default(0);

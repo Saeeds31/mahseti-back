@@ -9,4 +9,3 @@ Route::prefix('v1/front')->group(function () {
     Route::get("/base", [FrontController::class, "base"])->name('base');
     Route::get("/shop-filters", [FrontController::class, "filters"])->name('shop-filters');
 });
-    

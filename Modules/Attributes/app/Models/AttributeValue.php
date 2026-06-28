@@ -10,7 +10,7 @@ use Modules\Products\Models\ProductVariant;
 class AttributeValue extends Model
 {
     use HasFactory;
-    protected $fillable = ['attribute_id', 'value'];
+    protected $fillable = ['attribute_id', 'value', 'extra_value'];
 
     public function attribute()
     {

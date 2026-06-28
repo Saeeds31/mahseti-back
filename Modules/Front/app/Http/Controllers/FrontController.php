@@ -18,7 +18,9 @@ use Modules\Sliders\Models\Slider;
 class FrontController extends Controller
 {
     // app/Http/Controllers/ProductController.php
-
+    public function checkoutBase(){
+        
+    }
     public function priceRange(): array
     {
         // کمترین/بیشترین قیمت در جدول products

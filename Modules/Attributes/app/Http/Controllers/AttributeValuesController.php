@@ -4,6 +4,7 @@ namespace Modules\Attributes\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Modules\Attributes\Http\Requests\AttributeStoreRequest;
 use Modules\Attributes\Http\Requests\StoreAttributeValueRequest;
 use Modules\Attributes\Http\Requests\UpdateAttributeValueRequest;
@@ -19,7 +20,7 @@ class AttributeValuesController extends Controller
      */
     public function index(Attribute $attribute)
     {
-        $values = $attribute->values()->get();
+        $values = $attribute->values()->latest()->get();
 
         return response()->json([
             'success' => true,
@@ -35,7 +36,12 @@ class AttributeValuesController extends Controller
     {
         $data = $request->validated();
         $data['attribute_id'] = $attribute->id;
-
+        if ($request->hasFile('extra_value')) {
+            $path = $request->file('extra_value')->store('/attributes', 'public');
+            $data['extra_value'] = $path;
+        } else if (is_string($request->extra_value) && !empty($request->extra_value)) {
+            $data['extra_value'] = $request->extra_value;
+        }
         $value = AttributeValue::create($data);
         $notifications->create(
             " ثبت  مقدار ویژگی",
@@ -89,7 +95,24 @@ class AttributeValuesController extends Controller
         }
         $data = $request->validated();
         $data['attribute_id'] = $attribute->id;
-
+        $oldExtraValue = $value->extra_value;
+        if ($request->hasFile('extra_value')) {
+            if ($oldExtraValue && Storage::disk('public')->exists($oldExtraValue)) {
+                Storage::disk('public')->delete($oldExtraValue);
+            }
+            $path = $request->file('extra_value')->store('attributes', 'public');
+            $data['extra_value'] = $path;
+        } else if (is_string($request->extra_value) && !empty($request->extra_value)) {
+            if ($oldExtraValue && Storage::disk('public')->exists($oldExtraValue)) {
+                Storage::disk('public')->delete($oldExtraValue);
+            }
+            $data['extra_value'] = trim($request->extra_value);
+        } else {
+            if ($oldExtraValue && Storage::disk('public')->exists($oldExtraValue)) {
+                Storage::disk('public')->delete($oldExtraValue);
+            }
+            $data['extra_value'] = null;
+        }
         $value->update($data);
         $notifications->create(
             " ویرایش  مقدار ویژگی",
@@ -127,6 +150,11 @@ class AttributeValuesController extends Controller
             "notification_product",
             ['attribute' => $attribute->id]
         );
+        if ($value->extra_value) {
+            if ($value->extra_value && Storage::disk('public')->exists($value->extra_value)) {
+                Storage::disk('public')->delete($value->extra_value);
+            }
+        }
         $value->delete();
 
         return response()->json([

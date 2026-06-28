@@ -13,6 +13,7 @@ class AttributeStoreRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
+            'value_type' => ['nullable', 'string', 'max:255'],
         ];
     }
 

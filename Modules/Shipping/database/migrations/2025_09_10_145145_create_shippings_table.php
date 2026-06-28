@@ -11,11 +11,13 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('shipping_methods', function (Blueprint $table) {
+        Schema::create('shippings', function (Blueprint $table) {
             $table->id();
-            $table->string('name'); // نام روش ارسال
+            $table->string('title');
+            $table->string('icon')->nullable();
+            $table->integer('cost');
+            $table->integer('priority')->nullable();
             $table->text('description')->nullable();
-            $table->bigInteger('default_cost')->default(0); // هزینه پیشفرض
             $table->boolean('status')->default(true);
             $table->timestamps();
         });
@@ -26,6 +28,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('shipping_methods');
+        Schema::dropIfExists('shippings');
     }
 };

@@ -35,14 +35,19 @@ class CitiesController extends Controller
     {
         $perPage = $request->get('per_page', 10);
 
-        $cities = City::with('province')->paginate($perPage);
-
+        $query = City::query();
+        if ($search = $request->get('search')) {
+            $query->where('name', 'like', "%{$search}%");
+        }
+        $cities = $query->with('province')->paginate($perPage);
         return response()->json([
             'success' => true,
             'message' => 'لیست شهرها',
             'data'    => $cities
         ]);
     }
+
+
 
     /**
      * Store a newly created city in storage.

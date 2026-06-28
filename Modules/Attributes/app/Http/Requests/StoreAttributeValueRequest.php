@@ -14,6 +14,8 @@ class StoreAttributeValueRequest extends FormRequest
         return [
             'attribute_id' => ['required', 'exists:attributes,id'],
             'value'        => ['required', 'string', 'max:255'],
+            'extra_value'        => 'nullable|max:1024',
+
         ];
     }
 

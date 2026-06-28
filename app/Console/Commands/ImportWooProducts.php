@@ -13,23 +13,37 @@ use Modules\Categories\Models\Category;
 
 class ImportWooProducts extends Command
 {
-    protected $signature = 'import:woo-products';
+    protected $signature = 'import:woo-products {page=1 : Page number to start from} {perPage=50 : Number of products per page}';
     protected $description = 'One-time import of 50 WooCommerce products';
 
     public function handle()
     {
         $this->info('Woo import started...');
+        $page = $this->argument('page');
+        $perPage = $this->argument('perPage');
 
         $products = Http::withBasicAuth(
             config('services.woo.key'),
             config('services.woo.secret')
         )->get(config('services.woo.url') . '/wp-json/wc/v3/products', [
-            'per_page' => 50,
+            'per_page' => $perPage,
+            'page' => $page,
             'status'   => 'publish',
         ])->json();
+        $totalProducts = count($products);
+        if ($totalProducts === 0) {
+            $this->warn("No products found on page {$page}");
+            return;
+        }
 
+        $this->info("Found {$totalProducts} products on page {$page}");
+
+        // ایجاد Progress Bar
+        $bar = $this->output->createProgressBar($totalProducts);
+        $bar->start();
+        $this->output->writeln('');
         foreach ($products as $wooProduct) {
-
+            $bar->setFormat("%current%/%max% [%bar%] %percent:3s%% -- Importing: {$wooProduct['name']}");
             // تشخیص نوع
             $isVariable = $wooProduct['type'] === 'variable';
 
@@ -79,7 +93,10 @@ class ImportWooProducts extends Command
             if ($isVariable) {
                 $this->importVariants($product, $wooProduct['id']);
             }
+            $bar->advance();
+            $this->output->writeln('');
         }
+        $bar->finish();
 
         $this->info('Woo import finished successfully ✅');
     }

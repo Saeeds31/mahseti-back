@@ -17,10 +17,19 @@ class WalletController extends Controller
      */
     public function index()
     {
-        $wallets = Wallet::with(['user', 'transactions'])->paginate(20);
+        $walletsQuery = Wallet::with(['user', 'transactions']);
+        // Search by username
+        if (request()->has('search')) {
+            $userName = request()->input('search');
+            $walletsQuery->whereHas('user', function ($query) use ($userName) {
+                $query->where('full_name', 'like', "%{$userName}%");
+            });
+        }
+        $wallets = $walletsQuery->paginate(20);
+    
         return response()->json($wallets);
     }
-
+    
     /**
      * ایجاد کیف پول جدید برای کاربر
      */

@@ -76,13 +76,18 @@ class UsersController extends Controller
         return response()->json($users);
     }
     // لیست مدیران
-    public function managerIndex()
+    public function managerIndex(Request $request)
     {
-        $users = User::with(['roles', 'addresses', 'wallet'])
-            ->whereHas('roles', function ($query) {
-                $query->whereNotIn('slug', ['customer', 'superAdmin']);
-            })
-            ->get();
+        $query = User::with(['roles', 'addresses', 'wallet']);
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('full_name', 'like', "%{$search}%")
+                    ->orWhere('mobile', 'like', "%{$search}%");
+            });
+        }
+        $users = $query->whereHas('roles', function ($query) {
+            $query->whereNotIn('slug', ['customer', 'superAdmin']);
+        })->get();
         return response()->json($users);
     }
     // ساخت کاربر جدید

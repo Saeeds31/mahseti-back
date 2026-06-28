@@ -20,7 +20,7 @@ class ArticleCategoryUpdateRequest extends FormRequest
                 'max:255',
                 Rule::unique('article_categories', 'slug')->ignore($this->route('article_category'))
             ],
-            'parent_id'        => ['sometimes', 'nullable', 'exists:article_categories,id'],
+            'parent_id'        => ['nullable', 'exists:article_categories,id'],
             'meta_title'       => ['sometimes', 'string', 'max:255'],
             'meta_description' => ['sometimes', 'string'],
             'description'      => ['sometimes', 'string'],

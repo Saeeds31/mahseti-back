@@ -14,6 +14,8 @@ class UpdateAttributeValueRequest extends FormRequest
         return [
             'attribute_id' => ['sometimes', 'exists:attributes,id'],
             'value'        => ['sometimes', 'string', 'max:255'],
+            'extra_value'        => 'sometimes|max:1024',
+
         ];
     }
 

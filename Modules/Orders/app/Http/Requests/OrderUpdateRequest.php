@@ -14,7 +14,7 @@ class OrderUpdateRequest extends FormRequest
         return [
             'user_id'           => ['sometimes', 'exists:users,id'],
             'address_id'        => ['sometimes', 'exists:addresses,id'],
-            'shipping_method_id'=> ['sometimes', 'nullable', 'exists:shipping_methods,id'],
+            'shipping_method_id'=> ['sometimes', 'nullable', 'exists:shippings,id'],
             'subtotal'          => ['sometimes', 'integer', 'min:0'],
             'discount_amount'   => ['sometimes', 'integer', 'min:0'],
             'shipping_cost'     => ['sometimes', 'integer', 'min:0'],
