@@ -21,7 +21,7 @@ class OrderUpdateRequest extends FormRequest
             'total'             => ['sometimes', 'integer', 'min:0'],
             'payment_method'    => ['sometimes', 'string', 'max:50'],
             'payment_status'    => ['sometimes', 'string', 'max:50'],
-            'status'            => ['sometimes', 'string', 'in:pending,processing,shipped,completed,canceled'],
+            'status'            => ['sometimes', 'string', 'in:pending,paid,shipped,completed,canceled'],
         ];
     }
 

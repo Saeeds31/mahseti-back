@@ -3,6 +3,7 @@
 namespace Modules\Wallet\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Services\SmsService;
 use Illuminate\Support\Facades\DB;
 use Modules\Wallet\Http\Requests\WalletTransactionStoreRequest;
 use Modules\Wallet\Models\Wallet;
@@ -37,10 +38,13 @@ class WalletTransactionController extends Controller
             $transaction = $wallet->transactions()->create($data);
 
             // بروزرسانی موجودی
+            $smsService = new SmsService();
             if ($data['type'] === 'credit') {
                 $wallet->increment('balance', $data['amount']);
+                $smsService->sendToKavenegar('increase-wallet', $wallet->user->mobile, $data['amount'], ['token20' => $wallet->user->getDisplayName(null)]);
             } else {
                 $wallet->decrement('balance', $data['amount']);
+                $smsService->sendToKavenegar('decrease-wallet', $wallet->user->mobile, $data['amount'], ['token20' => $wallet->user->getDisplayName(null), 'token2' => $transaction->description]);
             }
 
             return response()->json([

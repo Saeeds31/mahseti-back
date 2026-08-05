@@ -4,20 +4,28 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Modules\Users\Models\User;
 
 class SmsService
 {
-    public function sendWelcome($mobile)
+    public function sendToAdmins(string $template, string $token, array $extraData = []): void
     {
-        $message = base64_encode("ضمن تشکر از حسن انتخاب شما\nثبت نام شما با موفقیت انجام شد\شرکت پدهوشا ");
+        // پیدا کردن همه کاربرانی که نقش admin دارند
+        $admins = User::whereHas('roles', function ($query) {
+            $query->where('slug', 'admin');
+        })->get();
 
-        return Http::get("https://api.kavenegar.com/v1/58734E58626A776F504146536367354A643863484F7A5A34703838694E66336B6B5156546333665135524D3D/sms/send.json", [
-            'receptor' => $mobile,
-            'message' => $message,
-            'sender' => '1000066006700'
-        ]);
+        if ($admins->isEmpty()) {
+            Log::warning('هیچ ادمینی برای ارسال پیامک یافت نشد');
+            return;
+        }
+
+        foreach ($admins as $admin) {
+            if (!empty($admin->mobile)) {
+                $this->sendToKavenegar($template, $admin->mobile, $token, $extraData);
+            }
+        }
     }
-
     public function sendText($mobile, $text)
     {
 

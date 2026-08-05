@@ -14,14 +14,14 @@ class OrderStoreRequest extends FormRequest
         return [
             'user_id'           => ['required', 'exists:users,id'],
             'address_id'        => ['required', 'exists:addresses,id'],
-            'shipping_method_id'=> ['nullable', 'exists:shippings,id'],
+            'shipping_id'=> ['nullable', 'exists:shippings,id'],
             'subtotal'          => ['required', 'integer', 'min:0'],
             'discount_amount'   => ['nullable', 'integer', 'min:0'],
             'shipping_cost'     => ['nullable', 'integer', 'min:0'],
             'total'             => ['required', 'integer', 'min:0'],
             'payment_method'    => ['nullable', 'string', 'max:50'],
             'payment_status'    => ['nullable', 'string', 'max:50'],
-            'status'            => ['nullable', 'string', 'in:pending,processing,shipped,completed,canceled'],
+            'status'            => ['nullable', 'string', 'in:pending,paid,shipped,completed,canceled'],
         ];
     }
 

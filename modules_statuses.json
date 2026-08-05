@@ -26,5 +26,6 @@
     "Wishlist": true,
     "Cart": true,
     "Gateway": true,
-    "Notifications": true
+    "Notifications": true,
+    "Payment": true
 }

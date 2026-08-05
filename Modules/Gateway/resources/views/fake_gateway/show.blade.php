@@ -29,13 +29,24 @@
                 <p>مبلغ: <strong>{{ number_format($transaction->amount) }}</strong> تومان</p>
 
                 <div class="d-flex justify-content-center gap-2 mt-4">
-                    <form method="POST" action="{{ route('fake.gateway.pay', $transaction) }}">
+                    <!-- پرداخت موفق - هدایت به Callback واقعی -->
+                    <form method="POST"
+                        action="{{ route('payment.callback', ['gateway' => $transaction->gateway ?? 'zarinpal']) }}">
                         @csrf
+                        <!-- پارامترهای مورد نیاز برای درگاه‌ها -->
+                        <input type="hidden" name="trackId" value="FAKE_{{ time() }}">
+                        <input type="hidden" name="Authority" value="FAKE_{{ time() }}">
+                        <input type="hidden" name="Status" value="OK">
+                        <input type="hidden" name="success" value="true">
                         <button class="btn btn-success px-4" type="submit">پرداخت موفق</button>
                     </form>
 
-                    <form method="POST" action="{{ route('fake.gateway.cancel', $transaction) }}">
+                    <!-- لغو پرداخت - هدایت به Callback واقعی -->
+                    <form method="POST"
+                        action="{{ route('payment.callback', ['gateway' => $transaction->gateway ?? 'zarinpal']) }}">
                         @csrf
+                        <input type="hidden" name="Status" value="Canceled">
+                        <input type="hidden" name="error" value="پرداخت توسط کاربر لغو شد">
                         <button class="btn btn-danger px-4" type="submit">لغو پرداخت</button>
                     </form>
                 </div>

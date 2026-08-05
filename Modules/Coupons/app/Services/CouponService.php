@@ -94,7 +94,20 @@ class CouponService
         DB::table('coupon_user')->insert([
             'coupon_id' => $coupon->id,
             'user_id'   => $userId,
-            'created_at'=> now(),
+            'created_at' => now(),
         ]);
+    }
+    public function releaseCoupon(Coupon $coupon, $userId): void
+    {
+        if ($coupon->usage_limit !== null) {
+            $coupon->increment('usage_limit');
+        }
+
+        DB::table('coupon_user')
+            ->where('coupon_id', $coupon->id)
+            ->where('user_id', $userId)
+            ->orderByDesc('created_at')
+            ->limit(1)
+            ->delete();
     }
 }

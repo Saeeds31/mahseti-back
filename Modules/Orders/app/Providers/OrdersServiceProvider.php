@@ -3,8 +3,9 @@
 namespace Modules\Orders\Providers;
 
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\ServiceProvider;
-use Modules\Orders\Console\CheckPendingTransactions;
+use Modules\Orders\Console\Commands\ExpireUnpaidOrders;
 use Nwidart\Modules\Traits\PathNamespace;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -28,9 +29,6 @@ class OrdersServiceProvider extends ServiceProvider
         $this->registerConfig();
         $this->registerViews();
         $this->loadMigrationsFrom(module_path($this->name, 'database/migrations'));
-        $this->commands([
-            CheckPendingTransactions::class,
-        ]);
     }
 
     /**
@@ -47,20 +45,22 @@ class OrdersServiceProvider extends ServiceProvider
      */
     protected function registerCommands(): void
     {
-        // $this->commands([]);
+        $this->commands([
+            ExpireUnpaidOrders::class,
+        ]);
     }
 
     /**
      * Register command Schedules.
      */
+
     protected function registerCommandSchedules(): void
     {
-        // $this->app->booted(function () {
-        //     $schedule = $this->app->make(Schedule::class);
-        //     $schedule->command('inspire')->hourly();
-        // });
+        $this->app->booted(function () {
+            $schedule = $this->app->make(Schedule::class);
+            $schedule->command('orders:expire-unpaid')->everyFifteenMinutes();
+        });
     }
-
     /**
      * Register translations.
      */

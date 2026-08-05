@@ -15,17 +15,28 @@ class GatewayTransaction extends Model
     protected $table = 'gateway_transactions';
 
     protected $fillable = [
-        'order_id',
-        'wallet_id',
         'user_id',
         'gateway',
         'authority',
+        'payable_id',
+        'payable_type',
+        'request_data',
+        'verify_data',
+        'paid_at',
         'ref_id',
         'amount',
         'status',
         'message',
     ];
+    protected $casts = [
 
+        'request_data' => 'array',
+
+        'verify_data' => 'array',
+
+        'paid_at' => 'datetime',
+
+    ];
     // انواع وضعیت تراکنش
     const STATUS_PENDING = 'pending';
     const STATUS_PAID    = 'paid';
@@ -49,5 +60,9 @@ class GatewayTransaction extends Model
     public function wallet()
     {
         return $this->belongsTo(Wallet::class);
+    }
+    public function payable()
+    {
+        return $this->morphTo();
     }
 }

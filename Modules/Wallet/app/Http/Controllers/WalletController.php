@@ -4,14 +4,21 @@ namespace Modules\Wallet\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Notifications\Services\NotificationService;
+use Modules\Payment\Services\PaymentService;
 use Modules\Wallet\Http\Requests\WalletStoreRequest;
 use Modules\Wallet\Http\Requests\WalletUpdateRequest;
 use Modules\Wallet\Models\Wallet;
 
 class WalletController extends Controller
 {
+    public function __construct(
+        protected PaymentService $paymentService,
+        protected NotificationService $notifications,
+
+    ) {}
     /**
      * لیست کیف پول‌ها
      */
@@ -26,10 +33,10 @@ class WalletController extends Controller
             });
         }
         $wallets = $walletsQuery->paginate(20);
-    
+
         return response()->json($wallets);
     }
-    
+
     /**
      * ایجاد کیف پول جدید برای کاربر
      */
@@ -97,41 +104,63 @@ class WalletController extends Controller
             'wallet' => $wallet
         ]);
     }
-    public function chargeWallet(Request $request,NotificationService $notifications)
+    public function chargeWallet(Request $request)
     {
         $user = $request->user();
-    
+
         $validated = $request->validate([
             'amount' => ['required', 'numeric', 'min:1000'],
         ]);
-    
+
         $amount = $validated['amount'];
-    
+
         // کیف پول کاربر
         $wallet = $user->wallet()->firstOrCreate([
             'user_id' => $user->id,
         ], [
             'balance' => 0,
         ]);
-    
-        // ایجاد تراکنش درگاه
-        $transaction = GatewayTransaction::create([
-            'wallet_id' => $wallet->id,
-            'user_id'   => $user->id,
-            'amount'    => $amount,
-            'status'    => GatewayTransaction::STATUS_PENDING,
-            'gateway'   => 'fake',  
-            'message'   => 'در انتظار پرداخت',
-        ]);
-        $notifications->create(
-            " شارژ کیف پول",
-            " کاربر  {$user->full_name} شارژ شد به میزان {$amount}",
-            "notifications_user",
-            ['users' => $user->id]
-        );
-        return response()->json([
-            'gateway_url' => route('fake.gateway.show', $transaction->id),
-        ]);
+
+        try {
+
+            $gateway = 'zibal';
+            $gatewayUrl = $this->paymentService->pay(
+                payable: $wallet,
+                user: $user,
+                amount: $amount,
+                gateway: 'zibal',
+            );
+
+            // ایجاد نوتیفیکیشن
+            $this->notifications->create(
+                "شارژ کیف پول در انتظار پرداخت",
+                "کاربر {$user->full_name} درخواست شارژ کیف پول به مبلغ {$amount} تومان از طریق درگاه {$gateway} را دارد",
+                "notifications_user",
+                ['users' => $user->id]
+            );
+
+            return response()->json([
+                'status' => 'gateway',
+                'data' => [
+                    'payment_url' => $gatewayUrl,
+                    'gateway' => $gateway,
+                    'amount' => $amount,
+                ],
+                'message' => 'به درگاه پرداخت هدایت شدید',
+            ], 200);
+        } catch (\Exception $e) {
+            // لاگ خطا
+            Log::error('Payment Gateway Error: ' . $e->getMessage(), [
+                'user_id' => $user->id,
+                'amount' => $amount,
+                'gateway' => $gateway,
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'متاسفانه خطایی در اتصال به درگاه پرداخت رخ داد: ' . $e->getMessage(),
+            ], 500);
+        }
     }
-    
 }
