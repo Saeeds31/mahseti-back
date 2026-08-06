@@ -41,7 +41,7 @@ class PosCashierSession extends Model
     // رابطه با تراکنش‌های نقدی این شیفت
     public function cashMovements()
     {
-        return $this->hasMany(PosCashMovement::class);
+      return $this->hasMany(PosCashMovement::class, 'cashier_session_id');
     }
 
     // محاسبه موجودی فعلی صندوق

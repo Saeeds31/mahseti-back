@@ -16,6 +16,33 @@ use Illuminate\Support\Facades\Validator;
 class PosOrderController extends Controller
 {
     /**
+     * جستجوی محصولات برای POS
+     */
+    public function searchProducts(Request $request)
+    {
+        $query = $request->get('q');
+
+        if (!$query) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $products = Product::with(['variants'])
+            ->where('sales_channel', 'in_store_only')
+            ->where(function ($q) use ($query) {
+                $q->where('title', 'like', "%{$query}%")
+                    ->orWhere('sku', 'like', "%{$query}%")
+                    ->orWhere('barcode', 'like', "%{$query}%");
+            })
+            ->where('stock', '>', 0)
+            ->limit(20)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $products
+        ]);
+    }
+    /**
      * نمایش لیست سفارشات حضوری
      */
     public function index(Request $request)

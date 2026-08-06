@@ -278,41 +278,44 @@ class PosCashierController extends Controller
         ]);
     }
     /**
- * نمایش جزئیات کامل یک شیفت
- */
-public function details($id)
-{
-    $session = PosCashierSession::with(['cashier', 'orders.user', 'orders.items', 'cashMovements'])
-        ->find($id);
+     * نمایش جزئیات کامل یک شیفت
+     */
+    public function details($id)
+    {
+        $session = PosCashierSession::with(['cashier', 'orders.user', 'orders.items', 'cashMovements'])
+            ->find($id);
 
-    if (!$session) {
+        if (!$session) {
+            return response()->json([
+                'success' => false,
+                'message' => 'شیفت یافت نشد'
+            ], 404);
+        }
+
+        // محاسبات آماری
+        $totalSales = $session->orders()->where('status', 'paid')->sum('total_amount');
+        $totalRefunds = $session->orders()->where('status', 'returned')->sum('total_amount');
+        $ordersCount = $session->orders()->where('status', 'paid')->count();
+
         return response()->json([
-            'success' => false,
-            'message' => 'شیفت یافت نشد'
-        ], 404);
-    }
-
-    // محاسبات آماری
-    $totalSales = $session->orders()->where('status', 'paid')->sum('total_amount');
-    $totalRefunds = $session->orders()->where('status', 'returned')->sum('total_amount');
-    $ordersCount = $session->orders()->where('status', 'paid')->count();
-
-    return response()->json([
-        'success' => true,
-        'data' => [
-            'session' => $session,
-            'statistics' => [
-                'total_sales' => $totalSales,
-                'total_refunds' => $totalRefunds,
-                'orders_count' => $ordersCount,
-                'current_balance' => $session->current_balance,
-                'cash_sales' => $session->total_cash_sales,
-                'card_sales' => $session->total_card_sales,
-                'opening_balance' => $session->opening_balance,
-                'closing_balance' => $session->closing_balance,
-                'net_sales' => $totalSales - $totalRefunds,
+            'success' => true,
+            'data' => [
+                'session' => $session,
+                'statistics' => [
+                    'total_sales' => $totalSales,
+                    'total_refunds' => $totalRefunds,
+                    'orders_count' => $ordersCount,
+                    'current_balance' => $session->current_balance,
+                    'cash_sales' => $session->total_cash_sales,
+                    'card_sales' => $session->total_card_sales,
+                    'opening_balance' => $session->opening_balance,
+                    'closing_balance' => $session->closing_balance,
+                    'net_sales' => $totalSales - $totalRefunds,
+                    'duration' => $session->closed_at ?
+                        $session->opened_at->diffInMinutes($session->closed_at) . ' دقیقه' :
+                        'در حال انجام'
+                ]
             ]
-        ]
-    ]);
-}
+        ]);
+    }
 }
