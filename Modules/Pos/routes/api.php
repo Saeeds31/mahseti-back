@@ -47,4 +47,6 @@ Route::prefix('v1/admin/pos')->name('pos.')->middleware(['auth:sanctum'])->group
     Route::get('/reports/cashiers', [PosReportController::class, 'cashiers'])->name('reports.cashiers');
     // ============== محصولات ==============
     Route::get('/products/search', [PosOrderController::class, 'searchProducts'])->name('products.search');
+    Route::get('/products/search-by-barcode', [PosOrderController::class, 'searchByBarcode'])->name('products.search.barcode');
+    
 });

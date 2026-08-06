@@ -12,9 +12,66 @@ use Modules\Users\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Modules\Products\Models\ProductVariant;
 
 class PosOrderController extends Controller
 {
+    /**
+     * جستجوی محصول با بارکد (بر روی تنوع)
+     */
+    public function searchByBarcode(Request $request)
+    {
+        $barcode = $request->get('barcode');
+
+        if (!$barcode) {
+            return response()->json(['success' => true, 'data' => null]);
+        }
+
+        // جستجو در تنوع‌ها
+        $variant = ProductVariant::with(['product'])
+            ->where('sku', $barcode)
+            ->orWhere('barcode', $barcode)
+            ->first();
+
+        if ($variant) {
+            $product = $variant->product;
+            // بررسی اینکه محصول برای فروش حضوری مجاز باشد
+            if (!in_array($product->sales_channel, ['in_store_only', 'both'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'این محصول برای فروش حضوری مجاز نیست'
+                ], 403);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'product' => $product,
+                    'variant' => $variant
+                ]
+            ]);
+        }
+
+        // اگر در تنوع پیدا نشد، در خود محصول جستجو کن
+        $product = Product::where('barcode', $barcode)
+            ->orWhere('sku', $barcode)
+            ->first();
+
+        if ($product) {
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'product' => $product,
+                    'variant' => $product->variants()->first() // اولین تنوع
+                ]
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'محصولی با این بارکد یافت نشد'
+        ], 404);
+    }
     /**
      * جستجوی محصولات برای POS
      */
@@ -26,8 +83,8 @@ class PosOrderController extends Controller
             return response()->json(['success' => true, 'data' => []]);
         }
 
-        $products = Product::with(['variants'])
-            ->where('sales_channel', 'in_store_only')
+        $products = Product::with(['variants.values.attribute'])
+            ->availableInStore() // استفاده از اسکوپ
             ->where(function ($q) use ($query) {
                 $q->where('title', 'like', "%{$query}%")
                     ->orWhere('sku', 'like', "%{$query}%")
@@ -117,13 +174,12 @@ class PosOrderController extends Controller
             DB::beginTransaction();
 
             // ۱. پیدا کردن یا ثبت کاربر
-            $user = User::where('phone', $request->user_phone)->first();
+            $user = User::where('mobile', $request->user_phone)->first();
             if (!$user) {
                 $user = User::create([
-                    'name' => 'مشتری فروشگاه',
-                    'phone' => $request->user_phone,
+                    'full_name' => 'مشتری فروشگاه',
+                    'mobile' => $request->user_phone,
                     'password' => bcrypt('12345678'),
-                    'is_active' => true
                 ]);
             }
 
