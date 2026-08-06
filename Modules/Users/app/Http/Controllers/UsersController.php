@@ -71,6 +71,13 @@ class UsersController extends Controller
             });
         }
 
+        // اگر پارامتر role ارسال شده باشد
+        if ($roleSlug = $request->get('role')) {
+            $query->whereHas('roles', function ($q) use ($roleSlug) {
+                $q->where('slug', $roleSlug);
+            });
+        }
+
         $users = $query->paginate(20);
 
         return response()->json($users);

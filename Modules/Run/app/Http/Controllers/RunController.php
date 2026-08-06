@@ -58,6 +58,7 @@ class RunController extends Controller
             'Comment'      => 'کامنت',
             'coupon'   => 'کد تخفیف',
             'Menu'   => 'منو',
+            'Pos'   => 'فروشگاه حضوری',
             'order'   => 'سفارش',
             'city'   => 'شهر',
             'province'   => 'استان',

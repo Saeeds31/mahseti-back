@@ -35,7 +35,7 @@ class PosCashierSession extends Model
     // رابطه با سفارشات این شیفت
     public function orders()
     {
-        return $this->hasMany(PosOrder::class);
+        return $this->hasMany(PosOrder::class, 'cashier_session_id');
     }
 
     // رابطه با تراکنش‌های نقدی این شیفت
