@@ -37,6 +37,7 @@
             "Modules\\Menus\\": "Modules/Menus/app/",
             "Modules\\Wishlist\\": "Modules/Wishlist/app/",
             "Modules\\Cart\\": "Modules/Cart/app/",
+            "Modules\\Pos\\": "Modules/Pos/app/",
             "Modules\\Contact\\": "Modules/Contact/app/",
             "Modules\\Products\\": "Modules/Products/app/",
             "Modules\\Gateway\\": "Modules/Gateway/app/",

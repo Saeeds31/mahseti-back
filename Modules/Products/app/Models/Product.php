@@ -8,6 +8,7 @@ use Modules\Cart\Models\Cart;
 use Modules\Categories\Models\Category;
 use Modules\Comments\Models\Comment;
 use Modules\Orders\Models\OrderItem;
+use Modules\Pos\Models\PosOrderItem;
 use Modules\Specifications\Models\Specification;
 
 // use Modules\Products\Database\Factories\ProductFactory;
@@ -24,6 +25,7 @@ class Product extends Model
         'status',
         'discount_value',
         'discount_type',
+        'sales_channel',
         'barcode',
         'sku',
         'stock',
@@ -53,12 +55,57 @@ class Product extends Model
         return $this->hasMany(Cart::class);
     }
     public function orderItems()
-{
-    return $this->hasMany(OrderItem::class);
-}
+    {
+        return $this->hasMany(OrderItem::class);
+    }
     public function comments()
     {
         return $this->morphMany(Comment::class, 'commentable');
+    }
+    public function posOrderItems()
+    {
+        return $this->hasMany(PosOrderItem::class);
+    }
+    public function scopeAvailableOnline($query)
+    {
+        return $query->whereIn('sales_channel', ['online_only', 'both']);
+    }
+
+    // scope برای محصولات قابل فروش حضوری
+    public function scopeAvailableInStore($query)
+    {
+        return $query->whereIn('sales_channel', ['in_store_only', 'both']);
+    }
+
+    // scope برای محصولات فقط آنلاین
+    public function scopeOnlineOnly($query)
+    {
+        return $query->where('sales_channel', 'online_only');
+    }
+
+    // scope برای محصولات فقط حضوری
+    public function scopeInStoreOnly($query)
+    {
+        return $query->where('sales_channel', 'in_store_only');
+    }
+
+    // scope برای محصولات هر دو کانال
+    public function scopeBothChannels($query)
+    {
+        return $query->where('sales_channel', 'both');
+    }
+    // بررسی اینکه محصول برای کانال خاصی قابل فروش است
+    public function isAvailableForChannel($channel)
+    {
+        if ($channel === 'online') {
+            return in_array($this->sales_channel, ['online_only', 'both']);
+        }
+
+        if ($channel === 'in_store') {
+            return in_array($this->sales_channel, ['in_store_only', 'both']);
+        }
+
+        return false;
     }
     public function specifications()
     {

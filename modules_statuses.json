@@ -27,5 +27,6 @@
     "Cart": true,
     "Gateway": true,
     "Notifications": true,
-    "Payment": true
+    "Payment": true,
+    "Pos": true
 }

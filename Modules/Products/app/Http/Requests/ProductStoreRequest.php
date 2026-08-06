@@ -18,6 +18,7 @@ class ProductStoreRequest extends FormRequest
             'meta_title'       => ['nullable', 'string', 'max:255'],
             'meta_description' => ['nullable', 'string', 'max:255'],
             'status'           => ['required', 'in:draft,published,unpublished'],
+            'sales_channel'           => ['required', 'in:online_only,in_store_only,both'],
             'discount_value'   => ['nullable', 'integer', 'min:0'],
             'discount_type'    => ['nullable', 'in:percent,fixed'],
             'barcode'          => ['nullable', 'string', 'max:100'],
