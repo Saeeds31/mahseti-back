@@ -14,8 +14,8 @@ class CategoryUpdateRequest extends FormRequest
     {
         return [
             'title'            => ['sometimes', 'string', 'max:255'],
-            'main_image'       => ['sometimes', 'file', 'max:255'],
-            'icon'             => ['sometimes', 'file', 'max:255'],
+            'main_image'       => ['sometimes', 'file', 'max:1024'],
+            'icon'             => ['sometimes', 'file', 'max:1024'],
             'slug'             => [
                 'sometimes',
                 'string',
