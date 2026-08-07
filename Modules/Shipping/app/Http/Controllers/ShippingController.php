@@ -191,7 +191,7 @@ class ShippingController extends Controller
 
 
 
-    public function frontShipping(Request $request)
+   public function frontShipping(Request $request)
     {
         $user = $request->user();
 
@@ -231,8 +231,6 @@ class ShippingController extends Controller
             $address = Address::with(['province', 'city'])->where('id', $request->address_id)
                 ->where('user_id', $user->id)
                 ->first();
-            $provinceId = $address->province_id;
-            $cityId     = $address->city_id;
         }
 
 
@@ -245,21 +243,75 @@ class ShippingController extends Controller
         $available = [];
 
         foreach ($shippings as $shipping) {
-            $cost = (new ShippingService)->calculateCost(
-                $shipping->id,
-                $provinceId,
-                $cityId,
-                $subTotal,
-                $quantity,
-                $request->get('weight', 0)
-            );
+            $conditions = $shipping->conditions;
 
-            if ($cost > 0 || $shipping->conditions->isEmpty()) {
+            // اگر هیچ شرطی نداشته باشه، به طور پیش‌فرض قابل استفاده است
+            if ($conditions->isEmpty()) {
+                $available[] = [
+                    'shipping_method' => $shipping->title,
+                    'method_id'       => $shipping->id,
+                    'cost'       => $shipping->cost,
+                ];
+                continue;
+            }
+
+            // بررسی تمام شرط‌ها
+            $allConditionsMet = true;
+
+            foreach ($conditions as $condition) {
+                $value = $condition->value;
+                $type = $condition->type;
+                $met = false;
+
+                switch ($condition->condition) {
+                    case 'total':
+                        $met = match ($type) {
+                            '==' => $subTotal == $value,
+                            '>=' => $subTotal >= $value,
+                            '<=' => $subTotal <= $value,
+                        };
+                        break;
+
+                    case 'province':
+                        $met = $address->province_id == $value;
+                        break;
+
+                    case 'city':
+                        $met = $address->city_id == $value;
+                        break;
+
+                    case 'quantity':
+                        $met = match ($type) {
+                            '==' => $quantity == $value,
+                            '>=' => $quantity >= $value,
+                            '<=' => $quantity <= $value,
+                        };
+                        break;
+
+                    case 'weight':
+                        // فرض می‌کنیم وزن درخواستی به صورت دلاری ارسال می‌شه
+                        $met = match ($type) {
+                            '==' => $request->get('weight', 0) == $value,
+                            '>=' => $request->get('weight', 0) >= $value,
+                            '<=' => $request->get('weight', 0) <= $value,
+                        };
+                        break;
+                }
+
+                if (!$met) {
+                    $allConditionsMet = false;
+                    break;
+                }
+            }
+
+            if ($allConditionsMet) {
                 $available[] = [
                     'id'          => $shipping->id,
                     'name'        => $shipping->title,
                     'description' => $shipping->description,
-                    'cost'        => $cost > 0 ? $cost : (int) $shipping->cost,
+                    'icon' => $shipping->icon,
+                    'cost'        => (int) $shipping->cost,
+
                 ];
             }
         }

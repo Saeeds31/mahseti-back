@@ -4,6 +4,7 @@ namespace Modules\Shipping\Services;
 
 use Modules\Shipping\Models\Shipping;
 
+
 class ShippingService
 {
     /**
