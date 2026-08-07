@@ -140,6 +140,8 @@ class Product extends Model
     public static function topDiscounted($limit = 10)
     {
         return self::select('*')
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->where('status', 'published')
             ->selectRaw("
             CASE 
                 WHEN discount_type = 'percent' 
@@ -149,6 +151,7 @@ class Product extends Model
                 ELSE 0
             END as real_discount
         ")
+            ->where('discount_value', '>', 0) // ← فقط محصولات با تخفیف
             ->orderByDesc('real_discount')
             ->limit($limit)
             ->get();
@@ -156,6 +159,7 @@ class Product extends Model
     public static function latestProducts($limit = 8)
     {
         return self::where('status', "published") // فقط فعال‌ها
+            ->whereIn('sales_channel', ['online_only', 'both'])
             ->orderBy('created_at', 'desc')
             ->take($limit)
             ->get();

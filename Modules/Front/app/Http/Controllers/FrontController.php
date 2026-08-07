@@ -18,9 +18,7 @@ use Modules\Sliders\Models\Slider;
 class FrontController extends Controller
 {
     // app/Http/Controllers/ProductController.php
-    public function checkoutBase(){
-        
-    }
+    public function checkoutBase() {}
     public function priceRange(): array
     {
         // کمترین/بیشترین قیمت در جدول products
@@ -69,12 +67,14 @@ class FrontController extends Controller
             'data'    => $data
         ], 200);
     }
-   
+
     public function HomeProducts()
     {
         $categories = Category::with([
             'products' => function ($q) {
-                $q->where('status', 'published')->latest()->take(8);
+                $q->where('status', 'published')
+                    ->whereIn('sales_channel', ['online_only', 'both'])
+                    ->latest()->take(8);
             }
         ])
             ->where('show_products_in_home', true)

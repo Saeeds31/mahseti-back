@@ -202,9 +202,11 @@ class ProductsController extends Controller
         $product->delete();
         return response()->json(['message' => 'Product deleted successfully']);
     }
+
     public function search(Request $request)
     {
-        $query = Product::with(['categories']);
+        $query = Product::with(['categories'])
+            ->whereIn('sales_channel', ['online_only', 'both']);
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%");
@@ -216,7 +218,8 @@ class ProductsController extends Controller
     public function frontIndex(Request $request)
     {
         $query = Product::with(['categories', 'variants'])
-            ->where('status', "published")->latest(); // فقط فعال‌ها
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->where('status', "published")->latest();
 
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
@@ -315,7 +318,9 @@ class ProductsController extends Controller
             'variants.values.attribute',
             'specifications',
             'comments'
-        ])->findOrFail($id);
+        ])
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->findOrFail($id);
 
         $variants = $product->variants;
 
@@ -436,6 +441,7 @@ class ProductsController extends Controller
         $categoryIds = $product->categories->pluck('id');
         // پیدا کردن محصولات مشابه
         $similar = Product::where('status', 'published')
+            ->whereIn('sales_channel', ['online_only', 'both'])
             ->whereHas('categories', function ($q) use ($categoryIds) {
                 $q->whereIn('categories.id', $categoryIds);
             })

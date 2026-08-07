@@ -18,6 +18,7 @@ class PosOrder extends Model
         'discount_amount',
         'total_amount',
         'paid_amount',
+        'quantity',
         'status',
         'cashier_session_id',
         'cashier_id',
