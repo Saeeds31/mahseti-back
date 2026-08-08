@@ -18,6 +18,10 @@ use Modules\Shipping\Services\ShippingService;
 class ShippingController extends Controller
 {
 
+    public function __construct(
+        protected ShippingService $shippingService,
+    ) {}
+
     /**
      * Display a listing of shipping methods (with pagination).
      */
@@ -191,11 +195,12 @@ class ShippingController extends Controller
 
 
 
-   public function frontShipping(Request $request)
+
+    public function frontShipping(Request $request)
     {
         $user = $request->user();
 
-        // 1) ابتدا subtotal را از سبد خرید حساب می‌کنیم
+        // 1) دریافت آیتم‌های سبد خرید
         $cartItems = Cart::where('user_id', $user->id)->get();
 
         if ($cartItems->isEmpty()) {
@@ -206,20 +211,18 @@ class ShippingController extends Controller
         }
 
         $subTotal = $cartItems->sum(fn($item) => $item->price * $item->quantity);
-        $quantity = $cartItems->sum(fn($item) =>  $item->quantity);
-
+        $quantity = $cartItems->sum(fn($item) => $item->quantity);
 
         // =====================================================
-        // 2) تشخیص استان و شهر
+        // 2) تشخیص آدرس
         // =====================================================
-
         $addressId = $request->get('address_id');
+        $address = null;
 
         if (!$addressId) {
             $firstAddress = Address::where('user_id', $user->id)->first();
             if ($firstAddress) {
-                $provinceId = $firstAddress->province_id;
-                $cityId     = $firstAddress->city_id;
+                $address = $firstAddress;
             } else {
                 return response()->json([
                     'success' => true,
@@ -228,34 +231,181 @@ class ShippingController extends Controller
                 ]);
             }
         } else {
-            $address = Address::with(['province', 'city'])->where('id', $request->address_id)
+            $address = Address::with(['province', 'city'])
+                ->where('id', $addressId)
                 ->where('user_id', $user->id)
                 ->first();
         }
 
+        // =====================================================
+        // 3) دریافت سفارش رزرو (اگر وجود داشته باشد)
+        // =====================================================
+        $reservationOrderId = $request->get('reservation_order_id');
+        $reservationOrder = null;
+        $reservationShippingId = null;
+        $reservationShippingCost = 0;
 
+        if ($reservationOrderId) {
+            $reservationOrder = Order::where('id', $reservationOrderId)
+                ->where('user_id', $user->id)
+                ->where('status', 'reserved')
+                ->where('reserved_until', '>', now())
+                ->with(['shipping'])
+                ->first();
+
+            if ($reservationOrder) {
+                $reservationShippingId = $reservationOrder->shipping_id;
+                $reservationShippingCost = (int) $reservationOrder->shipping_cost;
+            }
+        }
 
         // =====================================================
-        // 3) دریافت روش‌های حمل‌ونقل و محاسبه هزینه
+        // 4) اگر رزرو وجود دارد
         // =====================================================
+        if ($reservationOrder && $reservationShippingId) {
+            // ابتدا روش حمل سفارش رزرو رو چک کن
+            $shipping = Shipping::with('conditions')->find($reservationShippingId);
 
+            if ($shipping) {
+                $address = $reservationOrder->address;
+                // بررسی کن که آیا این روش با شرایط فعلی (سبد خرید جدید + آدرس) معتبر هست یا نه
+                $isValid = $this->shippingService->checkShippingValidity($shipping, $subTotal, $quantity, $address, $request);
+
+                if ($isValid) {
+                    // معتبر هست => فقط همین یک روش رو برگردون
+                    $available[] = [
+                        'id' => $shipping->id,
+                        'name' => $shipping->title,
+                        'description' => $shipping->description,
+                        'icon' => $shipping->icon,
+                        'cost' => 0,
+                        'is_reservation_method' => true,
+                        'is_available' => true,
+                        'message' => 'روش حمل سفارش رزرو شما'
+                    ];
+
+                    return response()->json([
+                        'success' => true,
+                        'methods' => $available,
+                        'message' => 'روش حمل سفارش رزرو شما',
+                        'has_reservation' => true,
+                    ]);
+                }
+            }
+
+            // =====================================================
+            // 5) اگر روش رزرو معتبر نبود => برو سراغ سایر روش‌ها با محاسبه تفاوت
+            // =====================================================
+            $shippings = Shipping::with('conditions')->where('status', 1)->get();
+            $available = [];
+
+            foreach ($shippings as $shipping) {
+                $conditions = $shipping->conditions;
+
+                if ($conditions->isEmpty()) {
+                    $cost = (int) $shipping->cost;
+                    $available[] = $this->shippingService->formatShippingMethodWithDifference($shipping, $cost, $reservationShippingCost);
+                    continue;
+                }
+
+                $allConditionsMet = true;
+
+                foreach ($conditions as $condition) {
+                    $value = $condition->value;
+                    $type = $condition->type;
+                    $met = false;
+
+                    switch ($condition->condition) {
+                        case 'total':
+                            $met = match ($type) {
+                                '==' => $subTotal == $value,
+                                '>=' => $subTotal >= $value,
+                                '<=' => $subTotal <= $value,
+                                '>'  => $subTotal > $value,
+                                '<'  => $subTotal < $value,
+                                default => false,
+                            };
+                            break;
+
+                        case 'province':
+                            $met = $address->province_id == $value;
+                            break;
+
+                        case 'city':
+                            $met = $address->city_id == $value;
+                            break;
+
+                        case 'quantity':
+                            $met = match ($type) {
+                                '==' => $quantity == $value,
+                                '>=' => $quantity >= $value,
+                                '<=' => $quantity <= $value,
+                                '>'  => $quantity > $value,
+                                '<'  => $quantity < $value,
+                                default => false,
+                            };
+                            break;
+
+                        case 'weight':
+                            $met = match ($type) {
+                                '==' => $request->get('weight', 0) == $value,
+                                '>=' => $request->get('weight', 0) >= $value,
+                                '<=' => $request->get('weight', 0) <= $value,
+                                '>'  => $request->get('weight', 0) > $value,
+                                '<'  => $request->get('weight', 0) < $value,
+                                default => false,
+                            };
+                            break;
+
+                        default:
+                            $met = true;
+                    }
+
+                    if (!$met) {
+                        $allConditionsMet = false;
+                        break;
+                    }
+                }
+
+                if ($allConditionsMet) {
+                    $cost = (int) $shipping->cost;
+                    $available[] = $this->formatShippingMethodWithDifference($shipping, $cost, $reservationShippingCost);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'methods' => $available,
+                'message' => 'روش حمل سفارش رزرو شما معتبر نیست، لطفاً روش دیگری را انتخاب کنید',
+                'has_reservation' => true,
+                'reservation_method_invalid' => true,
+            ]);
+        }
+
+        // =====================================================
+        // 6) حالت عادی (بدون رزرو)
+        // =====================================================
         $shippings = Shipping::with('conditions')->where('status', 1)->get();
         $available = [];
 
         foreach ($shippings as $shipping) {
             $conditions = $shipping->conditions;
 
-            // اگر هیچ شرطی نداشته باشه، به طور پیش‌فرض قابل استفاده است
             if ($conditions->isEmpty()) {
+                $cost = (int) $shipping->cost;
                 $available[] = [
-                    'shipping_method' => $shipping->title,
-                    'method_id'       => $shipping->id,
-                    'cost'       => $shipping->cost,
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'icon' => $shipping->icon,
+                    'cost' => $cost,
+                    'is_reservation_method' => false,
+                    'is_available' => true,
+                    'message' => null
                 ];
                 continue;
             }
 
-            // بررسی تمام شرط‌ها
             $allConditionsMet = true;
 
             foreach ($conditions as $condition) {
@@ -269,6 +419,9 @@ class ShippingController extends Controller
                             '==' => $subTotal == $value,
                             '>=' => $subTotal >= $value,
                             '<=' => $subTotal <= $value,
+                            '>'  => $subTotal > $value,
+                            '<'  => $subTotal < $value,
+                            default => false,
                         };
                         break;
 
@@ -285,17 +438,25 @@ class ShippingController extends Controller
                             '==' => $quantity == $value,
                             '>=' => $quantity >= $value,
                             '<=' => $quantity <= $value,
+                            '>'  => $quantity > $value,
+                            '<'  => $quantity < $value,
+                            default => false,
                         };
                         break;
 
                     case 'weight':
-                        // فرض می‌کنیم وزن درخواستی به صورت دلاری ارسال می‌شه
                         $met = match ($type) {
                             '==' => $request->get('weight', 0) == $value,
                             '>=' => $request->get('weight', 0) >= $value,
                             '<=' => $request->get('weight', 0) <= $value,
+                            '>'  => $request->get('weight', 0) > $value,
+                            '<'  => $request->get('weight', 0) < $value,
+                            default => false,
                         };
                         break;
+
+                    default:
+                        $met = true;
                 }
 
                 if (!$met) {
@@ -305,20 +466,25 @@ class ShippingController extends Controller
             }
 
             if ($allConditionsMet) {
+                $cost = (int) $shipping->cost;
                 $available[] = [
-                    'id'          => $shipping->id,
-                    'name'        => $shipping->title,
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
                     'description' => $shipping->description,
                     'icon' => $shipping->icon,
-                    'cost'        => (int) $shipping->cost,
-
+                    'cost' => $cost,
+                    'is_reservation_method' => false,
+                    'is_available' => true,
+                    'message' => null
                 ];
             }
         }
+
         return response()->json([
-            'success'  => true,
-            'methods'  => $available,
+            'success' => true,
+            'methods' => $available,
             'message' => 'لیست روش های حمل و نقل',
+            'has_reservation' => false,
         ]);
     }
 }

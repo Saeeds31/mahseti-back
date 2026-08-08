@@ -142,4 +142,102 @@ class ShippingService
 
         return ['valid' => true, 'cost' => $cost];
     }
+    /**
+     * بررسی اعتبار روش حمل با شرایط فعلی
+     */
+    public function checkShippingValidity($shipping, $subTotal, $quantity, $address, $request)
+    {
+        $conditions = $shipping->conditions;
+
+        if ($conditions->isEmpty()) {
+            return true;
+        }
+
+        foreach ($conditions as $condition) {
+            $value = $condition->value;
+            $type = $condition->type;
+            $met = false;
+
+            switch ($condition->condition) {
+                case 'total':
+                    $met = match ($type) {
+                        '==' => $subTotal == $value,
+                        '>=' => $subTotal >= $value,
+                        '<=' => $subTotal <= $value,
+                        '>'  => $subTotal > $value,
+                        '<'  => $subTotal < $value,
+                        default => false,
+                    };
+                    break;
+
+                case 'province':
+                    $met = $address->province_id == $value;
+                    break;
+
+                case 'city':
+                    $met = $address->city_id == $value;
+                    break;
+
+                case 'quantity':
+                    $met = match ($type) {
+                        '==' => $quantity == $value,
+                        '>=' => $quantity >= $value,
+                        '<=' => $quantity <= $value,
+                        '>'  => $quantity > $value,
+                        '<'  => $quantity < $value,
+                        default => false,
+                    };
+                    break;
+
+                case 'weight':
+                    $met = match ($type) {
+                        '==' => $request->get('weight', 0) == $value,
+                        '>=' => $request->get('weight', 0) >= $value,
+                        '<=' => $request->get('weight', 0) <= $value,
+                        '>'  => $request->get('weight', 0) > $value,
+                        '<'  => $request->get('weight', 0) < $value,
+                        default => false,
+                    };
+                    break;
+
+                default:
+                    $met = true;
+            }
+
+            if (!$met) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * فرمت کردن روش حمل با محاسبه تفاوت نسبت به هزینه رزرو
+     */
+    public function formatShippingMethodWithDifference($shipping, $cost, $reservationShippingCost)
+    {
+        $difference = $cost - $reservationShippingCost;
+
+        $method = [
+            'id' => $shipping->id,
+            'name' => $shipping->title,
+            'description' => $shipping->description,
+            'icon' => $shipping->icon,
+            'cost' => $difference,
+            'is_reservation_method' => false,
+            'is_available' => true,
+            'message' => null
+        ];
+
+        if ($difference > 0) {
+            $method['message'] = "افزایش هزینه حمل نسبت به سفارش رزرو: " . number_format($difference) . " تومان";
+        } elseif ($difference < 0) {
+            $method['message'] = "کاهش هزینه حمل نسبت به سفارش رزرو: " . number_format(abs($difference)) . " تومان";
+        } else {
+            $method['message'] = "هزینه حمل برابر با سفارش رزرو شما";
+        }
+
+        return $method;
+    }
 }

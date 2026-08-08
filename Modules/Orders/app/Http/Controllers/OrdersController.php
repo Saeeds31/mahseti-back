@@ -41,14 +41,31 @@ class OrdersController extends Controller
      */
     public function index(Request $request)
     {
-        $orders = Order::with(['user', 'address', 'shipping'])->latest()->paginate(20);
+        $query = Order::with([
+            'user',
+            'address',
+            'shipping',
+            'childOrders' => function ($query) {
+                $query->with(['user', 'address', 'shipping', 'items']);
+            }
+        ])
+            ->whereNull('parent_order_id');
+
         // اگر کوئری جستجو اومد روی نام کاربر یا شماره موبایل اعمال کن
         if ($search = $request->get('q')) {
-            $orders->whereHas('user', function ($q) use ($search) {
-                $q->where('full_name', 'like', "%{$search}%")
-                    ->orWhere('mobile', 'like', "%{$search}%");
+            $query->where(function ($q) use ($search) {
+                $q->whereHas('user', function ($userQuery) use ($search) {
+                    $userQuery->where('full_name', 'like', "%{$search}%")
+                        ->orWhere('mobile', 'like', "%{$search}%");
+                })
+                    ->orWhereHas('childOrders.user', function ($userQuery) use ($search) {
+                        $userQuery->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
             });
         }
+
+        $orders = $query->latest()->paginate(20);
 
         return response()->json([
             'message' => "لیست سفارشات",
@@ -90,13 +107,14 @@ class OrdersController extends Controller
      */
     public function show(Order $order)
     {
-        return response()->json(
-            [
-                'message' => 'جزئیات سفارش',
-                'success' => true,
-                'data' => $order->load(['user', 'address.province', 'address.city', 'shipping', 'items.product', 'items.variant.values'])
-            ]
-        );
+        // بارگذاری کامل سفارش با تمام فرزندان
+        $order = Order::withAllChildren()->find($order->id);
+
+        return response()->json([
+            'message' => 'جزئیات سفارش',
+            'success' => true,
+            'data' => $order
+        ]);
     }
 
     /**
@@ -226,7 +244,7 @@ class OrdersController extends Controller
     public function changeStatus(Request $request, Order $order)
     {
         $data = $request->validate([
-            'status'         => 'required|in:pending,paid,shipped,completed,canceled,returned,reserved,failed',
+            'status' => 'required|in:pending,paid,shipped,completed,canceled,returned,reserved,failed',
         ]);
 
         // بررسی تغییر وضعیت به مواردی که نیاز به عملیات خاص دارن
@@ -253,30 +271,102 @@ class OrdersController extends Controller
             }
         }
 
-        // بروزرسانی وضعیت و وضعیت پرداخت
+        // بروزرسانی وضعیت سفارش اصلی
         if (isset($data['status'])) {
             $order->status = $data['status'];
         }
 
-
         $order->save();
+
+        $this->updateChildOrdersStatus($order, $data['status']);
+
+        // ارسال نوتیفیکیشن
         $this->notifications->create(
             "تغییر وضعیت",
-            " یک سفارش در سیستم تغییر وضعیت پیدا کرد",
+            "یک سفارش در سیستم تغییر وضعیت پیدا کرد",
             "notification_order",
             ['order' => $order->id]
         );
-        $this->smsService->sendToKavenegar('change-order-status', $order->user->mobile, $order->id, ['token20' => $order->user->getDisplayName($order->address->receiver_name), 'token2' => $order->status_label]);
+
+        $this->smsService->sendToKavenegar(
+            'change-order-status',
+            $order->user->mobile,
+            $order->id,
+            [
+                'token20' => $order->user->getDisplayName($order->address->receiver_name),
+                'token2' => $order->status_label
+            ]
+        );
+
         return response()->json([
             'message' => 'وضعیت سفارش با موفقیت تغییر کرد',
-            'order'   => $order->load(['items', 'user', 'address', 'shipping'])
+            'order' => $order->load(['items', 'user', 'address', 'shipping', 'childOrders'])
         ]);
     }
+
+    /**
+     * به‌روزرسانی وضعیت تمام سفارش‌های فرزند به صورت بازگشتی
+     */
+    private function updateChildOrdersStatus(Order $parentOrder, string $status)
+    {
+        // بارگذاری فرزندان سطح اول
+        $parentOrder->load(['childOrders']);
+
+        foreach ($parentOrder->childOrders as $childOrder) {
+            // به‌روزرسانی وضعیت فرزند
+            $childOrder->status = $status;
+            $childOrder->save();
+
+            // ارسال نوتیفیکیشن برای هر فرزند (اختیاری)
+            $this->notifications->create(
+                "تغییر وضعیت سفارش فرزند",
+                "وضعیت سفارش #{$childOrder->id} به {$status} تغییر کرد",
+                "notification_order",
+                ['order' => $childOrder->id]
+            );
+
+            // فراخوانی بازگشتی برای فرزندان سطوح پایین‌تر
+            if ($childOrder->childOrders->isNotEmpty()) {
+                $this->updateChildOrdersStatus($childOrder, $status);
+            }
+        }
+    }
+    public function getPrintData(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer|exists:orders,id'
+        ]);
+
+        $orders = Order::with([
+            'user',
+            'address.province',
+            'address.city',
+            'shipping',
+            'items.product',
+            'items.variant.values.attribute'
+        ])->whereIn('id', $request->ids)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $orders
+        ]);
+    }
+
     public function todaysOrders()
     {
         $today = Carbon::today();
+
         $orders = Order::with(['items', 'user', 'address', 'shipping'])
-            ->whereDate('created_at', $today)->where('status', "paid")
+            ->whereDate('created_at', $today)
+            ->where(function ($query) {
+                $query->where('status', 'paid') // سفارشات عادی پرداخت شده
+                    ->orWhere(function ($q) {
+                        $q->where('status', 'reserved') // سفارشات رزرو
+                            ->where('reserved_until', '<=', now()); // که زمانشان رسیده باشد
+                    });
+            })
             ->get();
 
         return response()->json([
@@ -285,6 +375,7 @@ class OrdersController extends Controller
             'data'    => $orders
         ]);
     }
+
     public function checkout(
         Request $request,
     ) {
@@ -293,10 +384,12 @@ class OrdersController extends Controller
         // 1. اعتبارسنجی اولیه درخواست
         $request->validate([
             'address_id'        => 'required|exists:addresses,id',
-            'shipping_id' => 'required|exists:shippings,id',
+            'shipping_id'       => 'required|exists:shippings,id',
             'payment_method'    => 'required|in:wallet,online',
-            'gateway' => 'required_if:payment_method,online|string',
+            'gateway'           => 'required_if:payment_method,online|string',
             'coupon_code'       => 'nullable|string',
+            'reservation_type'  => 'nullable|in:none,three_days,seven_days',
+            'parent_order_id'   => 'nullable|exists:orders,id',
         ]);
 
         // 2. بارگذاری آدرس انتخابی کاربر
@@ -333,13 +426,44 @@ class OrdersController extends Controller
 
         // 6. محاسبه هزینه حمل و نقل
         $shippingMethod = Shipping::findOrFail($request->shipping_id);
-        $shippingCost = (new ShippingService)->calculateCost(
-            $request->shipping_id,
-            $address->province_id,
-            $address->city_id,
-            $subtotal
-        );
 
+        $reservationOrderId = $request->get('parent_order_id');
+        $reservationOrder = null;
+        $shippingCost = 0;
+        if ($reservationOrderId) {
+            $reservationOrder = Order::where('id', $reservationOrderId)
+                ->where('user_id', $user->id)
+                ->where('status', 'reserved')
+                ->where('reserved_until', '>', now())
+                ->with(['shipping', 'address'])
+                ->first();
+        }
+        if ($reservationOrder) {
+            $selectdShipping = Shipping::find($request->shipping_id);
+            if (!$selectdShipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = $selectdShipping->cost - $reservationOrder->shipping_cost;
+        } else {
+
+            $shipping = Shipping::find($request->shipping_id);
+
+            if (!$shipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = (new ShippingService)->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+        }
         // 7. جمع نهایی
         $total = $subtotal - $discountAmount + $shippingCost;
 
@@ -365,9 +489,17 @@ class OrdersController extends Controller
             }
         }
 
-        // 10. ایجاد سفارش و تراکنش‌ها
-        return DB::transaction(function () use (
+        // 10. تعیین نوع رزرو و تاریخ انقضا
+        $reservationType = $request->input('reservation_type', 'none');
+        $reservedUntil = null;
 
+        if ($reservationType !== 'none') {
+            $days = $reservationType === 'three_days' ? 3 : 7;
+            $reservedUntil = now()->addDays($days);
+        }
+
+        // 11. ایجاد سفارش و تراکنش‌ها
+        return DB::transaction(function () use (
             $user,
             $cartItems,
             $subtotal,
@@ -379,8 +511,29 @@ class OrdersController extends Controller
             $request,
             $coupon,
             $shippingMethod,
-            $address
+            $address,
+            $reservationType,
+            $reservedUntil
         ) {
+            // اگر parent_order_id وجود داشته باشد، سفارش را به عنوان فرزند ثبت می‌کنیم
+            $parentOrderId = $request->input('parent_order_id');
+
+            // اعتبارسنجی parent_order در صورتی که وجود داشته باشد
+            if ($parentOrderId) {
+                $parentOrder = Order::where('id', $parentOrderId)
+                    ->where('user_id', $user->id)
+                    ->first();
+
+                if (!$parentOrder) {
+                    throw new \Exception('سفارش والد معتبر نیست');
+                }
+
+                // بررسی اینکه آیا سفارش والد هنوز قابل اضافه کردن آیتم هست
+                if (!in_array($parentOrder->status, ['pending', 'reserved'])) {
+                    throw new \Exception('سفارش والد قابل ویرایش نیست');
+                }
+            }
+
             $order = Order::create([
                 'user_id' => $user->id,
                 'address_id' => $address->id,
@@ -389,12 +542,17 @@ class OrdersController extends Controller
                 'discount_amount' => $discountAmount,
                 'shipping_cost' => $shippingCost,
                 'total' => $total,
+                'wallet_payment' => $fromWallet,
+                'online_payment' => $toPayOnline,
                 'payment_method' => $request->payment_method,
                 'payment_status' => $toPayOnline > 0 ? 'pending' : 'paid',
-                'status' => $toPayOnline > 0 ? 'pending' :  'paid',
+                'status' => $reservationType !== 'none' ? 'reserved' : ($toPayOnline > 0 ? 'pending' : 'paid'),
+                'reservation_type' => $reservationType,
+                'reserved_until' => $reservedUntil,
+                'parent_order_id' => $parentOrderId,
             ]);
 
-            // 11. ثبت آیتم‌ها و کم کردن موجودی
+            // 12. ثبت آیتم‌ها و کم کردن موجودی (همون روال قبلی)
             foreach ($cartItems as $item) {
                 $order->items()->create([
                     'product_id' => $item->variant->product_id,
@@ -402,10 +560,12 @@ class OrdersController extends Controller
                     'quantity' => $item->quantity,
                     'price' => $item->price_final,
                 ]);
+
+                // کم کردن موجودی مانند قبل
                 $item->variant->decrement('stock', $item->quantity);
             }
 
-            // 12. اعمال کوپن
+            // 13. اعمال کوپن
             if ($coupon) {
                 (new CouponService)
                     ->applyCoupon($coupon, $user->id);
@@ -413,9 +573,8 @@ class OrdersController extends Controller
                 $order->save();
             }
 
-            // 13. پرداخت از کیف پول
+            // 14. پرداخت از کیف پول
             if ($fromWallet > 0) {
-
                 $this->walletService->withdraw(
                     wallet: $user->wallet,
                     amount: $fromWallet,
@@ -424,24 +583,18 @@ class OrdersController extends Controller
                 );
             }
 
-            // 14. پاک کردن سبد خرید
+            // 15. پاک کردن سبد خرید
             Cart::where('user_id', $user->id)->delete();
 
-            // 15. اگر پرداخت آنلاین نیاز است → درگاه 
+            // 16. اگر پرداخت آنلاین نیاز است → درگاه 
             if ($toPayOnline > 0) {
-
                 $gateway = $request->gateway ?? config('payment.default');
 
                 $gatewayUrl = $this->paymentService->pay(
-
                     payable: $order,
-
                     user: $user,
-
                     amount: $toPayOnline,
-
                     gateway: $gateway,
-
                 );
 
                 $this->notifications->create(
@@ -454,23 +607,34 @@ class OrdersController extends Controller
                 );
 
                 return response()->json([
-
                     'order' => $order->load('items'),
                     'status' => 'gateway',
                     'gateway_url' => $gatewayUrl,
-
+                    'reservation_type' => $reservationType,
+                    'reserved_until' => $reservedUntil,
                 ], 201);
             }
-            $this->paymentCompletionService->completeWalletOrder(
-                $order
-            );
+
+            // 17. اگر سفارش رزرو است (پرداخت کامل شده با کیف پول یا نیازی به پرداخت نیست)
+            if ($reservationType !== 'none') {
+                return response()->json([
+                    'order' => $order->load('items'),
+                    'status' => 'reserved',
+                    'message' => $reservedUntil
+                        ? "سفارش با موفقیت رزرو شد. تا تاریخ {$reservedUntil->format('Y-m-d H:i:s')} فرصت پرداخت دارید."
+                        : "سفارش با موفقیت رزرو شد.",
+                    'reservation_type' => $reservationType,
+                    'reserved_until' => $reservedUntil,
+                ], 201);
+            }
+
+            // 18. تکمیل سفارش با کیف پول (برای سفارش‌های عادی)
+            $this->paymentCompletionService->completeWalletOrder($order);
 
             return response()->json([
-
                 'order' => $order->load('items'),
                 'status' => 'wallet',
                 'message' => 'سفارش با موفقیت ثبت شد.',
-
             ], 201);
         });
     }
@@ -541,21 +705,44 @@ class OrdersController extends Controller
         // --------------------------------------------------------
         // 4) محاسبه هزینه حمل
         // --------------------------------------------------------
-        $shipping = Shipping::find($request->shipping_id);
-
-        if (!$shipping) {
-            return response()->json([
-                'success' => false,
-                'message' => 'روش حمل معتبر نیست'
-            ], 400);
+        $reservationOrderId = $request->get('reservation_order_id');
+        $reservationOrder = null;
+        $shippingCost = 0;
+        if ($reservationOrderId) {
+            $reservationOrder = Order::where('id', $reservationOrderId)
+                ->where('user_id', $user->id)
+                ->where('status', 'reserved')
+                ->where('reserved_until', '>', now())
+                ->with(['shipping', 'address'])
+                ->first();
         }
+        if ($reservationOrder) {
+            $selectdShipping = Shipping::find($request->shipping_id);
+            if (!$selectdShipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = $selectdShipping->cost - $reservationOrder->shipping_cost;
+        } else {
 
-        $shippingCost = (new ShippingService)->calculateCost(
-            $request->shipping_id,
-            $address->province_id,
-            $address->city_id,
-            $subtotal
-        );
+            $shipping = Shipping::find($request->shipping_id);
+
+            if (!$shipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+
+            $shippingCost = (new ShippingService)->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+        }
 
 
         // --------------------------------------------------------
@@ -594,7 +781,7 @@ class OrdersController extends Controller
 
         return response()->json([
             'success' => true,
-
+            'reservationOrder' => $reservationOrder,
             'summary' => [
                 'subtotal'          => (int)$subtotal,
                 'product_discount'  => (int)$productDiscount,
@@ -616,8 +803,16 @@ class OrdersController extends Controller
     {
         $user = $request->user();
 
-        $query = Order::with(['items.product', 'address', 'shipping'])
-            ->where('user_id', $user->id);
+        $query = Order::with([
+            'items.product',
+            'address',
+            'shipping',
+            'childOrders' => function ($q) {
+                $q->with(['items.product', 'address', 'shipping']);
+            }
+        ])
+            ->where('user_id', $user->id)
+            ->whereNull('parent_order_id'); // فقط سفارش‌های والد
 
         // فیلتر وضعیت سفارش
         if ($status = $request->get('status')) {
@@ -661,6 +856,27 @@ class OrdersController extends Controller
             'address.city',
             'shipping',
             'user',
+            'childOrders' => function ($query) {
+                $query->with([
+                    'items.product',
+                    'items.variant.values.attribute',
+                    'address.province',
+                    'address.city',
+                    'shipping',
+                    'user',
+                    'childOrders' => function ($q) {
+                        $q->with([
+                            'items.product',
+                            'items.variant.values.attribute',
+                            'address.province',
+                            'address.city',
+                            'shipping',
+                            'user',
+                            'childOrders' // و به همین ترتیب ادامه پیدا می‌کند
+                        ]);
+                    }
+                ]);
+            }
         ])->where('id', $orderId)
             ->where('user_id', $user->id) // فقط سفارش‌های خودش
             ->first();
@@ -673,6 +889,29 @@ class OrdersController extends Controller
 
         return response()->json([
             'order' => $order,
+        ]);
+    }
+    public function getActiveReservations()
+    {
+        $user = auth()->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'کاربر احراز هویت نشده است'
+            ], 401);
+        }
+
+        $reservations = Order::where('user_id', $user->id)
+            ->where('status', 'reserved')
+            ->where('reserved_until', '>', now())
+            ->with(['address', 'shipping', 'items.product', 'items.variant'])
+            ->orderBy('reserved_until', 'asc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $reservations
         ]);
     }
 }

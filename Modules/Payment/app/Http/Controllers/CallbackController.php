@@ -21,19 +21,18 @@ class CallbackController extends Controller
         Request $request,
         string $gateway
     ) {
-
+        $callbackLog = GatewayCallbackLog::create([
+            'gateway' => $gateway,
+            'method' => $request->method(),
+            'url' => $request->fullUrl(),
+            'ip' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'headers' => $request->headers->all(),
+            'query' => $request->query(),
+            'body' => $request->post(),
+            'payload' => $request->all(),
+        ]);
         try {
-            $callbackLog = GatewayCallbackLog::create([
-                'gateway' => $gateway,
-                'method' => $request->method(),
-                'url' => $request->fullUrl(),
-                'ip' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'headers' => $request->headers->all(),
-                'query' => $request->query(),
-                'body' => $request->post(),
-                'payload' => $request->all(),
-            ]);
             $result = $this->paymentVerifier->verify(
                 gateway: $gateway,
                 callback: $request->all(),

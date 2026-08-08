@@ -231,7 +231,7 @@ class ProductsController extends Controller
         if ($request->filled('category_ids')) {
             $categoryIds = explode(',', $request->category_ids);
             $query->whereHas('categories', function ($q) use ($categoryIds) {
-                $q->whereIn('id', $categoryIds);
+                $q->whereIn('categories.id', $categoryIds);
             });
         }
         if ($request->filled('attribute_values')) {

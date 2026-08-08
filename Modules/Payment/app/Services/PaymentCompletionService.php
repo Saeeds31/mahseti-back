@@ -88,7 +88,7 @@ class PaymentCompletionService
         }
         $order->update([
             'payment_status' => 'paid',
-            'status' => 'paid',
+            'status' => $order->status === 'reserved' ? 'reserved' : 'paid',
         ]);
 
         $user = $order->user;
