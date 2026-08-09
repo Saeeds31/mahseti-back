@@ -717,14 +717,14 @@ class OrdersController extends Controller
                 ->first();
         }
         if ($reservationOrder) {
-            $selectdShipping = Shipping::find($request->shipping_id);
-            if (!$selectdShipping) {
+            $shipping = Shipping::find($request->shipping_id);
+            if (!$shipping) {
                 return response()->json([
                     'success' => false,
                     'message' => 'روش حمل معتبر نیست'
                 ], 400);
             }
-            $shippingCost = $selectdShipping->cost - $reservationOrder->shipping_cost;
+            $shippingCost = $shipping->cost - $reservationOrder->shipping_cost;
         } else {
 
             $shipping = Shipping::find($request->shipping_id);
@@ -857,24 +857,13 @@ class OrdersController extends Controller
             'shipping',
             'user',
             'childOrders' => function ($query) {
-                $query->with([
+                $query->where('status', 'paid')->with([
                     'items.product',
                     'items.variant.values.attribute',
                     'address.province',
                     'address.city',
                     'shipping',
                     'user',
-                    'childOrders' => function ($q) {
-                        $q->with([
-                            'items.product',
-                            'items.variant.values.attribute',
-                            'address.province',
-                            'address.city',
-                            'shipping',
-                            'user',
-                            'childOrders' // و به همین ترتیب ادامه پیدا می‌کند
-                        ]);
-                    }
                 ]);
             }
         ])->where('id', $orderId)

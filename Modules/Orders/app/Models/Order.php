@@ -139,7 +139,14 @@ class Order extends Model
             'items.product',
             'items.variant.values',
             'childOrders' => function ($q) {
-                $q->withAllChildren(); // فراخوانی بازگشتی
+                $q->where('status', 'paid')->with([
+                    'user',
+                    'address.province',
+                    'address.city',
+                    'shipping',
+                    'items.product',
+                    'items.variant.values',
+                ]); // فراخوانی بازگشتی
             }
         ]);
     }
