@@ -20,6 +20,7 @@ class Product extends Model
         'title',
         'description',
         'main_image',
+        'is_rechargeable',
         'meta_title',
         'meta_description',
         'status',

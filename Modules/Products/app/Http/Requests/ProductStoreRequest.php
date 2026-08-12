@@ -21,6 +21,7 @@ class ProductStoreRequest extends FormRequest
             'sales_channel'           => ['required', 'in:online_only,in_store_only,both'],
             'discount_value'   => ['nullable', 'integer', 'min:0'],
             'discount_type'    => ['nullable', 'in:percent,fixed'],
+            'is_rechargeable'       => ['nullable', 'boolean'],
             'barcode'          => ['nullable', 'string', 'max:100'],
             'sku'              => ['nullable', 'string', 'max:100'],
             'stock'            => ['nullable', 'integer', 'min:0'],

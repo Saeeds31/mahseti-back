@@ -23,6 +23,8 @@ class ProductUpdateRequest extends FormRequest
             'discount_type'    => ['nullable', 'in:percent,fixed'],
             'barcode'          => ['nullable', 'string', 'max:100'],
             'sku'              => ['nullable', 'string', 'max:100'],
+            'is_rechargeable'       => ['nullable', 'boolean'],
+
             'stock'            => ['nullable', 'integer', 'min:0'],
             'price'            => ['nullable', 'integer', 'min:0'],
             'video'            => ['nullable', 'file', 'max:4096'],
