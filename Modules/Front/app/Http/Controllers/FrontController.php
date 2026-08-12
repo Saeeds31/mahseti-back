@@ -118,7 +118,8 @@ class FrontController extends Controller
                 'list' => $products
             ];
         }
-
+        $is_rechargeables = Product::where('is_rechargeable', true)->take(15)->get();
+        $data['is_rechargeables'] = $is_rechargeables;
         $data['selectedCategoryList'] = $selectedCategoryList;
         $data['top_discounted_products'] = Product::topDiscounted();
         $data['banners'] = Banner::groupedByPosition();
