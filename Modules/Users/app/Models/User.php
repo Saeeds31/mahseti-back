@@ -64,6 +64,17 @@ class User extends Authenticatable
             ->values()
             ->toArray();
     }
+    public function getDisplayName($addressReceiverName = null): string
+    {
+        if (!empty($this->full_name)) {
+            return $this->full_name;
+        }
+
+        if (!empty($addressReceiverName)) {
+            return $addressReceiverName;
+        }
+        return 'کاربر';
+    }
 
     public function hasPermission($permission)
     {

@@ -359,20 +359,24 @@ class OrdersController extends Controller
         $today = Carbon::today();
 
         $orders = Order::with(['items', 'user', 'address', 'shipping'])
-            ->whereDate('created_at', $today)
-            ->where(function ($query) {
-                $query->where('status', 'paid') // سفارشات عادی پرداخت شده
+            ->where(function ($query) use ($today) {
+                // شرط اول: سفارشات پرداخت شده امروز
+                $query->where(function ($q) use ($today) {
+                    $q->where('status', 'paid')
+                        ->whereDate('created_at', $today);
+                })
+                    // شرط دوم: سفارشات رزرو منقضی شده (هر زمانی)
                     ->orWhere(function ($q) {
-                        $q->where('status', 'reserved') // سفارشات رزرو
-                            ->where('reserved_until', '<=', now()); // که زمانشان رسیده باشد
+                        $q->where('status', 'reserved')
+                            ->where('reserved_until', '<=', now());
                     });
             })
             ->get();
 
         return response()->json([
             'success' => true,
-            'message' => 'تعداد سفارشات امروز',
-            'data'    => $orders
+            'message' => 'سفارشات امروز (paid) و رزروهای منقضی شده',
+            'data' => $orders
         ]);
     }
 
