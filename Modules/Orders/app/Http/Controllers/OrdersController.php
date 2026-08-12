@@ -294,7 +294,7 @@ class OrdersController extends Controller
             $order->id,
             [
                 'token20' => $order->user->getDisplayName($order->address->receiver_name),
-                'token2' => $order->status_label
+                'token10' => $order->status_label
             ]
         );
 

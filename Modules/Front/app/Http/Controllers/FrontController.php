@@ -89,15 +89,43 @@ class FrontController extends Controller
 
         return response()->json($result);
     }
+
     public function home()
     {
         $data = [];
-        $data['selected_categories'] = Category::where('show_in_home', 1)->get();
+
+        // دسته‌بندی‌های انتخاب شده برای نمایش در صفحه اصلی
+        $selectedCategories = Category::where('show_in_home', 1)->get();
+        $data['selected_categories'] = $selectedCategories;
+
+        // لیست محصولات هر دسته‌بندی که show_products_in_home دارند
+        $selectedCategoryList = [];
+        $categoriesWithProducts = Category::where('show_products_in_home', 1)->get();
+
+        foreach ($categoriesWithProducts as $category) {
+            // دریافت ۱۰ محصول آخر این دسته‌بندی (بر اساس تاریخ ایجاد)
+            $products = $category->products()
+                ->where('status', 'published') // فقط محصولات منتشر شده
+                ->whereIn('sales_channel', ['online_only', 'both']) // فقط محصولات قابل فروش آنلاین
+                ->orderBy('created_at', 'desc')
+                ->limit(10)
+                ->get();
+
+            $selectedCategoryList[] = [
+                'id' => $category->id,
+                'title' => $category->title,
+                'slug' => $category->slug,
+                'list' => $products
+            ];
+        }
+
+        $data['selectedCategoryList'] = $selectedCategoryList;
         $data['top_discounted_products'] = Product::topDiscounted();
         $data['banners'] = Banner::groupedByPosition();
         $data['sliders'] = Slider::orderBy('id')->get();
         $data['new_products'] = Product::latestProducts();
         $data['blogs'] = Article::latestArticles();
+
         return response()->json([
             'success' => true,
             'message' => 'اطلاعات صفحه اصلی',
