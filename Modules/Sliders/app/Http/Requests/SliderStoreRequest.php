@@ -15,7 +15,7 @@ class SliderStoreRequest extends FormRequest
             'title'       => ['required', 'string', 'max:255'],
             'link'        => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'image'       => ['nullable', 'file', 'max:255'], // می‌تونی بعدا image validation بذاری
+            'image'       => ['nullable', 'file', 'max:1024'], // می‌تونی بعدا image validation بذاری
             'type'        => ['nullable', 'in:desktop,mobile'],
             'button_text' => ['nullable', 'string', 'max:100'],
         ];

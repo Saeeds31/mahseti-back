@@ -19,7 +19,7 @@ class ProductsController extends Controller
     // لیست محصولات
     public function index(Request $request)
     {
-        $query = Product::with(['categories', 'images', 'variants.values'])->latest();
+        $query = Product::with(['categories', 'images', 'variants.values']);
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%");
@@ -30,7 +30,7 @@ class ProductsController extends Controller
                 $q->where('status', $status);
             });
         }
-        $products = $query->paginate(15);
+        $products = $query->latest()->paginate(15);
         return response()->json($products);
     }
 
@@ -217,96 +217,126 @@ class ProductsController extends Controller
     }
     public function frontIndex(Request $request)
     {
-        $query = Product::with(['categories', 'variants'])
-            ->whereIn('sales_channel', ['online_only', 'both'])
-            ->where('status', "published")->latest();
+        // اعتبارسنجی ورودی‌ها
+        $request->validate([
+            'search' => 'nullable|string|max:255',
+            'category_ids' => 'nullable|string|regex:/^[0-9,]+$/',
+            'attribute_values' => 'nullable|string|regex:/^[0-9,]+$/',
+            'min_price' => 'nullable|numeric|min:0',
+            'max_price' => 'nullable|numeric|min:0|gte:min_price',
+            'in_stock' => 'nullable|boolean',
+            'sort' => 'nullable|in:newest,cheapest,expensive,best_seller',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
 
+        // کوئری پایه
+        $query = Product::with(['categories', 'variants.values'])
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->where('status', 'published')
+            ->select('products.*');
+
+        // 1. فیلتر جستجو
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%")
-                    ->orWhere('description', 'like', "%{$search}%");
+                $q->where('title', 'LIKE', "%{$search}%")
+                    ->orWhere('description', 'LIKE', "%{$search}%");
             });
         }
 
+        // 2. فیلتر دسته‌بندی
         if ($request->filled('category_ids')) {
-            $categoryIds = explode(',', $request->category_ids);
-            $query->whereHas('categories', function ($q) use ($categoryIds) {
-                $q->whereIn('categories.id', $categoryIds);
-            });
-        }
-        if ($request->filled('attribute_values')) {
-            $query->when($request->filled('attribute_values'), function ($q) use ($request) {
-                $valueIds = explode(',', $request->query('attribute_values'));
-                $q->whereHas('variants.values', function ($q2) use ($valueIds) {
-                    $q2->whereIn('attribute_values.id', $valueIds);
-                });
-            });
-        }
-        if ($request->filled('sort')) {
-            $query->when($request->filled('sort'), function ($q) use ($request) {
-                switch ($request->sort) {
-                    case 'newest':
-                        $q->latest(); // orderBy('created_at', 'desc')
-                        break;
-                    case 'cheapest':
-                        $q->orderBy('price', 'asc');
-                        break;
-
-                    case 'expensive':
-                        $q->orderBy('price', 'desc');
-                        break;
-                    case 'best_seller':
-                        $q->withSum('orderItems as total_sold', 'quantity')
-                            ->orderByDesc('total_sold');
-                        break;
-                }
-            });
-        }
-        if ($minPrice = $request->get('min_price')) {
-            $query->where(function ($q) use ($minPrice) {
-                $q->where('price', '>=', $minPrice)
-                    ->orWhereHas('variants', function ($v) use ($minPrice) {
-                        $v->where('price', '>=', $minPrice);
-                    });
-            });
-        }
-
-        if ($maxPrice = $request->get('max_price')) {
-            $query->where(function ($q) use ($maxPrice) {
-                $q->where('price', '<=', $maxPrice)
-                    ->orWhereHas('variants', function ($v) use ($maxPrice) {
-                        $v->where('price', '<=', $maxPrice);
-                    });
-            });
-        }
-
-        if (!is_null($request->get('in_stock'))) {
-            $inStock = $request->get('in_stock');
-
-            if ($inStock == 1) {
-                $query->where(function ($q) {
-                    $q->where('stock', '>', 0)
-                        ->orWhereHas('variants', function ($v) {
-                            $v->where('stock', '>', 0);
-                        });
-                });
-            } else {
-                $query->where(function ($q) {
-                    $q->where('stock', '=', 0)
-                        ->whereDoesntHave('variants', function ($v) {
-                            $v->where('stock', '>', 0);
-                        });
+            $categoryIds = array_filter(explode(',', $request->category_ids));
+            if (!empty($categoryIds)) {
+                $query->whereHas('categories', function ($q) use ($categoryIds) {
+                    $q->whereIn('categories.id', $categoryIds);
                 });
             }
         }
 
+        // 3. فیلتر ویژگی‌ها
+        if ($request->filled('attribute_values')) {
+            $valueIds = array_filter(explode(',', $request->attribute_values));
+            if (!empty($valueIds)) {
+                $query->whereHas('variants.values', function ($q) use ($valueIds) {
+                    $q->whereIn('attribute_values.id', $valueIds);
+                });
+            }
+        }
 
-        $products = $query->paginate(15);
+        // 4. فیلتر قیمت (فقط روی تنوع‌ها)
+        if ($request->filled('min_price') || $request->filled('max_price')) {
+            $query->whereHas('variants', function ($q) use ($request) {
+                if ($request->filled('min_price')) {
+                    $q->where('price', '>=', $request->min_price);
+                }
+                if ($request->filled('max_price')) {
+                    $q->where('price', '<=', $request->max_price);
+                }
+            });
+        }
 
+        // 5. فیلتر موجودی
+        if (!is_null($request->get('in_stock'))) {
+            $inStock = filter_var($request->in_stock, FILTER_VALIDATE_BOOLEAN);
+
+            if ($inStock) {
+                $query->whereHas('variants', function ($q) {
+                    $q->where('stock', '>', 0);
+                });
+            } else {
+                $query->whereDoesntHave('variants', function ($q) {
+                    $q->where('stock', '>', 0);
+                });
+            }
+        }
+
+        // 6. مرتب‌سازی
+        if ($request->filled('sort')) {
+            switch ($request->sort) {
+                case 'newest':
+                    $query->orderBy('created_at', 'DESC');
+                    break;
+
+                case 'cheapest':
+                    $query->orderByRaw('
+                    COALESCE(
+                        (SELECT MIN(price) FROM product_variants 
+                         WHERE product_variants.product_id = products.id),
+                        999999999999
+                    ) ASC
+                ');
+                    break;
+
+                case 'expensive':
+                    $query->orderByRaw('
+                    COALESCE(
+                        (SELECT MAX(price) FROM product_variants 
+                         WHERE product_variants.product_id = products.id),
+                        0
+                    ) DESC
+                ');
+                    break;
+
+                case 'best_seller':
+                    $query->withSum('orderItems', 'quantity')
+                        ->orderByDesc('order_items_sum_quantity');
+                    break;
+            }
+        } else {
+            // مرتب‌سازی پیش‌فرض
+            $query->orderBy('created_at', 'DESC');
+        }
+
+        // 7. دریافت نتایج با صفحه‌بندی
+        $perPage = $request->get('per_page', 15);
+        $products = $query->paginate($perPage);
+
+        // 8. بازگرداندن پاسخ
         return response()->json([
             'success' => true,
-            'message' => 'لیست محصولات',
-            'data'    => $products,
+            'message' => 'لیست محصولات با موفقیت دریافت شد',
+            'data' => $products,
+
         ]);
     }
     public function frontDetail(Request $request, $id)

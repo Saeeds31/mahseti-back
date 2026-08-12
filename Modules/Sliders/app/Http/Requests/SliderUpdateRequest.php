@@ -15,7 +15,7 @@ class SliderUpdateRequest extends FormRequest
             'title'       => ['sometimes', 'string', 'max:255'],
             'link'        => ['sometimes', 'string', 'max:255'],
             'description' => ['sometimes', 'string'],
-            'image'       => ['sometimes', 'file', 'max:255'],
+            'image'       => ['sometimes', 'file', 'max:1024'],
             'type'        => ['sometimes', 'in:desktop,mobile'],
             'button_text' => ['sometimes', 'string', 'max:100'],
         ];

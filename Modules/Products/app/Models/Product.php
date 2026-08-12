@@ -113,6 +113,7 @@ class Product extends Model
             ->withPivot('specification_value_id')
             ->withTimestamps();
     }
+    
     protected static function booted()
     {
         static::saving(function ($product) {
