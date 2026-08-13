@@ -13,7 +13,6 @@ return new class extends Migration
     {
         Schema::table('products', function (Blueprint $table) {
             $table->integer('stock')->nullable()->change();
-            $table->integer('final_price')->after('price')->nullable();
         });
         Schema::table('product_variants', function (Blueprint $table) {
             $table->integer('stock')->nullable()->change();

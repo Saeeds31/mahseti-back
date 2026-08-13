@@ -47,7 +47,22 @@ class ProductsController extends Controller
         if ($request->hasFile('video')) {
             $data['video'] = $request->file('video')->store('products/videos', 'public');
         }
+
+        // بررسی اعتبار تخفیف برای محصول
+        $hasValidDiscount = !empty($data['discount_value']) &&
+            !empty($data['discount_type']) &&
+            (empty($data['discount_end_at']) || $data['discount_end_at'] > now());
+
+        // اگر تخفیف معتبر نبود، فیلدهای تخفیف رو نال کن
+        if (!$hasValidDiscount) {
+            $data['discount_value'] = null;
+            $data['discount_type'] = null;
+            $data['discount_start_at'] = null;
+            $data['discount_end_at'] = null;
+        }
+
         $product = Product::create($data);
+
         // دسته‌بندی‌ها
         if (!empty($data['categories'])) {
             $product->categories()->sync($data['categories']);
@@ -63,12 +78,23 @@ class ProductsController extends Controller
                 ]);
             }
         }
-        // ساخت تنوع پیش فرض    
-        $product->variants()->create([
+        // ساخت تنوع پیش فرض
+        $variantData = [
             'price' => $product->price,
             'stock' => $product->stock,
             'sku' => $product->sku,
-        ]);
+        ];
+
+        // اگر تخفیف معتبر بود، به تنوع هم اضافه کن
+        if ($hasValidDiscount) {
+            $variantData['discount_value'] = $data['discount_value'];
+            $variantData['discount_type'] = $data['discount_type'];
+            $variantData['discount_start_at'] = $data['discount_start_at'] ?? null;
+            $variantData['discount_end_at'] = $data['discount_end_at'] ?? null;
+        }
+
+        $product->variants()->create($variantData);
+
         $notifications->create(
             "ثبت محصول",
             "محصول {$product->title} در سیستم ثبت شد",
@@ -99,55 +125,91 @@ class ProductsController extends Controller
     public function update(ProductUpdateRequest $request, Product $product, NotificationService $notifications)
     {
         $data = $request->validated();
+
         // main_image
         if ($request->hasFile('main_image')) {
-            // حالت 2: فایل جدید اومده
             if ($product->main_image) {
                 Storage::disk('public')->delete($product->main_image);
             }
             $data['main_image'] = $request->file('main_image')->store('products/main', 'public');
         } elseif ($request->filled('main_image') && is_string($request->main_image)) {
-            // حالت 1: رشته ارسال شده (تصویر قبلی دست نخورده)
             $data['main_image'] = $product->main_image;
         } else {
-            // حالت 3: هیچ چیزی نیومده → تصویر پاک بشه
             if ($product->main_image) {
                 Storage::disk('public')->delete($product->main_image);
             }
             $data['main_image'] = null;
         }
 
-        // video
+        $remove_video = $request->input('remove_video');
         if ($request->hasFile('video')) {
-            // حالت 2: فایل جدید اومده
             if ($product->video) {
                 Storage::disk('public')->delete($product->video);
             }
             $data['video'] = $request->file('video')->store('products/videos', 'public');
-        } elseif ($request->filled('video') && is_string($request->video)) {
-            // حالت 1: رشته ارسال شده (ویدیو قبلی دست نخورده)
-            $data['video'] = $product->video;
-        } else {
-            // حالت 3: هیچ چیزی نیومده → ویدیو پاک بشه
+        } elseif ($remove_video) {
             if ($product->video) {
                 Storage::disk('public')->delete($product->video);
             }
             $data['video'] = null;
         }
+
+        // بررسی اینکه آیا تخفیف در درخواست ارسال شده یا نه
+        $discountSubmitted = array_key_exists('discount_value', $data) ||
+            array_key_exists('discount_type', $data) ||
+            array_key_exists('discount_start_at', $data) ||
+            array_key_exists('discount_end_at', $data);
+
+        // اگر تخفیف ارسال شده
+        if ($discountSubmitted) {
+            // بررسی اعتبار تخفیف
+            $hasValidDiscount = !empty($data['discount_value']) &&
+                !empty($data['discount_type']) &&
+                (empty($data['discount_end_at']) || $data['discount_end_at'] > now());
+
+            if ($hasValidDiscount) {
+                // تخفیف معتبر → روی همه تنوع‌ها اعمال کن
+                $product->variants()->update([
+                    'discount_value' => $data['discount_value'],
+                    'discount_type' => $data['discount_type'],
+                    'discount_start_at' => $data['discount_start_at'] ?? null,
+                    'discount_end_at' => $data['discount_end_at'] ?? null,
+                ]);
+            } else {
+                // تخفیف ارسال شده ولی نامعتبر → تخفیف تنوع‌ها رو پاک کن
+                $product->variants()->update([
+                    'discount_value' => null,
+                    'discount_type' => null,
+                    'discount_start_at' => null,
+                    'discount_end_at' => null,
+                ]);
+
+                // فیلدهای تخفیف محصول رو هم نال کن
+                $data['discount_value'] = null;
+                $data['discount_type'] = null;
+                $data['discount_start_at'] = null;
+                $data['discount_end_at'] = null;
+            }
+        }
+        // اگر تخفیف ارسال نشده → هیچ کاری با تنوع‌ها نکن
+
         $product->update($data);
+
         // دسته‌بندی‌ها
         if (!empty($data['categories'])) {
             $product->categories()->sync($data['categories']);
         }
-        // تصاویر حذف‌شده (لیست آیدی‌ها)
+
+        // تصاویر حذف‌شده
         if ($request->filled('deleted_images')) {
-            $deletedIds = $request->input('deleted_images'); // [1,2,3,...]
+            $deletedIds = $request->input('deleted_images');
             $oldImages = $product->images()->whereIn('id', $deletedIds)->get();
             foreach ($oldImages as $img) {
                 Storage::disk('public')->delete($img->path);
                 $img->delete();
             }
         }
+
         // تصاویر جدید
         if ($request->hasFile('images')) {
             foreach ($request->file('images') as $index => $image) {
@@ -159,15 +221,16 @@ class ProductsController extends Controller
                 ]);
             }
         }
+
         $notifications->create(
             "ویرایش محصول",
             "محصول {$product->title} در سیستم ویرایش شد",
             "notification_product",
             ['product' => $product->id]
         );
+
         return response()->json($product->load('categories', 'images', 'variants'));
     }
-
     // حذف محصول
     public function destroy(Product $product, NotificationService $notifications)
     {

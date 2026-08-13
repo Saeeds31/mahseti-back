@@ -23,25 +23,51 @@ class ProductVariantController extends Controller
     // ایجاد واریانت
     public function store(ProductVariantStoreRequest $request, Product $product, NotificationService $notifications)
     {
-        // حذف تنوع پیشفرض که در کنترلر محصول متد استور ساخته شده
+        // حذف تنوع‌های قبلی
         $data = $request->validated();
         $product->variants()->delete();
+
         $variants = [];
+
         foreach ($data['variants'] as $variantData) {
-            $variant = $product->variants()->create([
+            // اطلاعات پایه تنوع
+            $variantFields = [
                 'sku'   => $variantData['sku'] ?? null,
                 'price' => $variantData['price'],
                 'stock' => $variantData['stock'] ?? 0,
-            ]);
+            ];
+
+            // بررسی اینکه آیا تنوع تخفیف جداگانه داره
+            $hasVariantDiscount = !empty($variantData['discount_value']) &&
+                !empty($variantData['discount_type']) &&
+                (empty($variantData['discount_end_at']) || $variantData['discount_end_at'] > now());
+
+            if ($hasVariantDiscount) {
+                // حالت 1: تنوع تخفیف جداگانه داره → از تخفیف خودش استفاده کن
+                $variantFields['discount_value'] = $variantData['discount_value'];
+                $variantFields['discount_type'] = $variantData['discount_type'];
+                $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
+                $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
+            } else {
+                // حالت 2: تنوع تخفیف جداگانه نداره → از تخفیف محصول استفاده کن
+                $variantFields['discount_value'] = $product->discount_value;
+                $variantFields['discount_type'] = $product->discount_type;
+                $variantFields['discount_start_at'] = $product->discount_start_at;
+                $variantFields['discount_end_at'] = $product->discount_end_at;
+            }
+
+            $variant = $product->variants()->create($variantFields);
             $variant->values()->sync($variantData['values']);
             $variants[] = $variant->load('values');
         }
+
         $notifications->create(
             "ثبت تنوع محصول",
-            "تنوع محصول {$product->title} در سیستم ثبت شد",
+            "تنوع‌های محصول {$product->title} در سیستم ثبت شد",
             "notification_product",
-            ['product' => $product->id, 'variant' => $variant->id]
+            ['product' => $product->id]
         );
+
         return response()->json($variants);
     }
 
@@ -89,7 +115,7 @@ class ProductVariantController extends Controller
             return response()->json([
                 'message' => 'برای این تنوع یک سفارش ثبت شده و قابل حذف نیست',
                 'success' => false
-            ],403);
+            ], 403);
         }
         $notifications->create(
             "حذف تنوع محصول",
@@ -108,49 +134,110 @@ class ProductVariantController extends Controller
             'variants.*.sku' => 'nullable|string|max:255',
             'variants.*.price' => 'required|numeric',
             'variants.*.stock' => 'nullable|integer',
+            'variants.*.discount_value' => ['nullable', 'integer', 'min:0'],
+            'variants.*.discount_type' => ['nullable', 'in:percent,fixed'],
+            'variants.*.discount_start_at' => ['nullable', 'date'],
+            'variants.*.discount_end_at' => ['nullable', 'date', 'after:variants.*.discount_start_at'],
             'variants.*.values' => 'required|array',
             'variants.*.values.*' => 'exists:attribute_values,id',
         ]);
+
         $sentVariantIds = collect($data['variants'])
             ->pluck('id')
             ->filter()
             ->toArray();
-        // حذف واریانت‌هایی که در فرم ارسال نشده‌اند
+
+        // بررسی تنوع‌هایی که قراره حذف بشن
+        $variantsToDelete = $product->variants()
+            ->whereNotIn('id', $sentVariantIds)
+            ->get();
+
+        foreach ($variantsToDelete as $variant) {
+            // چک کن که آیا این تنوع در سفارش‌ها استفاده شده
+            $hasOrders = OrderItem::where('product_variant_id', $variant->id)->exists();
+
+            if ($hasOrders) {
+                return response()->json([
+                    'message' => "تنوع با id '{$variant->id}' در سفارش‌ها استفاده شده و قابل حذف نیست"
+                ], 422);
+            }
+        }
+
+        // حذف واریانت‌هایی که در فرم ارسال نشده‌اند و در سفارش استفاده نشده‌اند
         $product->variants()
             ->whereNotIn('id', $sentVariantIds)
             ->delete();
 
         $variants = [];
         foreach ($data['variants'] as $variantData) {
+            // بررسی تخفیف برای هر تنوع
+            $hasValidDiscount = !empty($variantData['discount_value']) &&
+                !empty($variantData['discount_type']) &&
+                (empty($variantData['discount_end_at']) || $variantData['discount_end_at'] > now());
+
             if (!empty($variantData['id'])) {
                 // واریانت قدیمی -> آپدیت
                 $variant = ProductVariant::where('product_id', $product->id)
                     ->where('id', $variantData['id'])
                     ->firstOrFail();
 
-                $variant->update([
+                $variantFields = [
                     'sku'   => $variantData['sku'] ?? null,
                     'price' => $variantData['price'],
                     'stock' => $variantData['stock'] ?? 0,
-                ]);
+                ];
+
+                // اگر تنوع تخفیف جداگانه معتبر داره
+                if ($hasValidDiscount) {
+                    $variantFields['discount_value'] = $variantData['discount_value'];
+                    $variantFields['discount_type'] = $variantData['discount_type'];
+                    $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
+                    $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
+                } else {
+                    // از تخفیف محصول استفاده کن
+                    $variantFields['discount_value'] = $product->discount_value;
+                    $variantFields['discount_type'] = $product->discount_type;
+                    $variantFields['discount_start_at'] = $product->discount_start_at;
+                    $variantFields['discount_end_at'] = $product->discount_end_at;
+                }
+
+                $variant->update($variantFields);
             } else {
                 // واریانت جدید -> ایجاد
-                $variant = $product->variants()->create([
+                $variantFields = [
                     'sku'   => $variantData['sku'] ?? null,
                     'price' => $variantData['price'],
                     'stock' => $variantData['stock'] ?? 0,
-                ]);
+                ];
+
+                // اگر تنوع تخفیف جداگانه معتبر داره
+                if ($hasValidDiscount) {
+                    $variantFields['discount_value'] = $variantData['discount_value'];
+                    $variantFields['discount_type'] = $variantData['discount_type'];
+                    $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
+                    $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
+                } else {
+                    // از تخفیف محصول استفاده کن
+                    $variantFields['discount_value'] = $product->discount_value;
+                    $variantFields['discount_type'] = $product->discount_type;
+                    $variantFields['discount_start_at'] = $product->discount_start_at;
+                    $variantFields['discount_end_at'] = $product->discount_end_at;
+                }
+
+                $variant = $product->variants()->create($variantFields);
             }
 
             $variant->values()->sync($variantData['values']);
             $variants[] = $variant->load('values');
         }
+
         $notifications->create(
-            "حذف محصول",
-            "محصول {$product->title} از سیستم حذف شد",
+            "ویرایش تنوع‌های محصول",
+            "تنوع‌های محصول {$product->title} ویرایش شد",
             "notification_product",
             ['product' => $product->id]
         );
+
         return response()->json($variants);
     }
 }

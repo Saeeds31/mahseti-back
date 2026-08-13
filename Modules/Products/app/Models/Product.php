@@ -4,6 +4,7 @@ namespace Modules\Products\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Facades\Cache;
 use Modules\Cart\Models\Cart;
 use Modules\Categories\Models\Category;
 use Modules\Comments\Models\Comment;
@@ -26,6 +27,8 @@ class Product extends Model
         'status',
         'discount_value',
         'discount_type',
+        'discount_start_at',
+        'discount_end_at',
         'sales_channel',
         'barcode',
         'sku',
@@ -33,6 +36,7 @@ class Product extends Model
         'price',
         'video'
     ];
+    protected $appends = ['final_price'];
 
     // رابطه با دسته‌بندی‌ها
     public function categories()
@@ -114,17 +118,34 @@ class Product extends Model
             ->withPivot('specification_value_id')
             ->withTimestamps();
     }
-    
+
+    public function getFinalPriceAttribute()
+    {
+        // استفاده از cache برای کاهش محاسبات
+        return Cache::remember("product_final_price_{$this->id}", 3600, function () {
+            $now = now();
+            $hasValidDiscount = !empty($this->discount_value) &&
+                !empty($this->discount_type) &&
+                (empty($this->discount_end_at) || $this->discount_end_at > $now);
+
+            if ($hasValidDiscount) {
+                if ($this->discount_type === 'percent') {
+                    return $this->price - ($this->price * $this->discount_value / 100);
+                } elseif ($this->discount_type === 'fixed') {
+                    return $this->price - $this->discount_value;
+                }
+            }
+            return $this->price;
+        });
+    }
     protected static function booted()
     {
-        static::saving(function ($product) {
-            if ($product->discount_type === 'percent' && $product->discount_value > 0) {
-                $product->final_price = $product->price - ($product->price * $product->discount_value / 100);
-            } elseif ($product->discount_type === 'fixed' && $product->discount_value > 0) {
-                $product->final_price = $product->price - $product->discount_value;
-            } else {
-                $product->final_price = $product->price;
-            }
+        static::saved(function ($product) {
+            Cache::forget("product_final_price_{$product->id}");
+        });
+
+        static::deleted(function ($product) {
+            Cache::forget("product_final_price_{$product->id}");
         });
     }
     public static  function dashboardReport()
