@@ -2,6 +2,7 @@
 
 namespace Modules\Products\Models;
 
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Modules\Attributes\Models\AttributeValue;
@@ -62,7 +63,10 @@ class ProductVariant extends Model
     {
         $cacheKey = "variant_final_price_{$this->id}";
 
-        return Cache::remember($cacheKey, 3600, function () {
+        // محاسبه زمان انقضای کش بر اساس تاریخ پایان تخفیف تنوع
+        $ttl = $this->calculateCacheTTL();
+
+        return Cache::remember($cacheKey, $ttl, function () {
             $now = now();
 
             // اولویت با تخفیف خود تنوع
@@ -80,6 +84,29 @@ class ProductVariant extends Model
             }
             return $this->price;
         });
+    }
+
+    /**
+     * محاسبه زمان انقضای کش بر اساس تاریخ پایان تخفیف تنوع
+     */
+    protected function calculateCacheTTL()
+    {
+        // اگر تنوع تخفیف تاریخ پایان داره
+        if (!empty($this->discount_end_at)) {
+            $now = now();
+            $end = Carbon::parse($this->discount_end_at);
+
+            // اگر تاریخ پایان گذشته، کش رو برای ۱ دقیقه نگه دار
+            if ($end <= $now) {
+                return 60;
+            }
+
+            // زمان باقی مونده تا پایان تخفیف + ۱ دقیقه
+            return $end->diffInSeconds($now) + 60;
+        }
+
+        // اگر تخفیف نامحدود یا بدون تاریخ پایان هست، ۱ ساعت کش کن
+        return 3600;
     }
 
     /**

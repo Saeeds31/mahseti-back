@@ -44,7 +44,7 @@ class CartController extends Controller
         $price_changes = [];
         $subtotal = 0; // جمع قیمت نهایی (price_final * qty)
         $product_discount_total = 0; // مجموع تخفیف محصولات از روی اختلاف original - final
-
+        $total_payable = 0;
         foreach ($items as $item) {
             $variant = $item->variant;
             $product = $variant->product;
@@ -90,8 +90,9 @@ class CartController extends Controller
             $item->line_final_total = $line_final_total;
             $item->line_discount = $line_discount;
 
-            $subtotal += $line_final_total;
+            $subtotal += $line_original_total;
             $product_discount_total += $line_discount;
+            $total_payable += $line_final_total;
         }
 
         return response()->json([
@@ -122,7 +123,7 @@ class CartController extends Controller
             'summary' => [
                 'subtotal' => (int)$subtotal,
                 'product_discount_total' => (int)$product_discount_total,
-                'total_payable' => (int)$subtotal, // اینجا فقط محصولات؛ هزینه حمل و کپن در متد checkoutSummary اضافه می‌شود
+                'total_payable' => (int)$total_payable, // اینجا فقط محصولات؛ هزینه حمل و کپن در متد checkoutSummary اضافه می‌شود
             ],
         ]);
     }

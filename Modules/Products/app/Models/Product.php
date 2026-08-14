@@ -4,6 +4,7 @@ namespace Modules\Products\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Modules\Cart\Models\Cart;
 use Modules\Categories\Models\Category;
@@ -121,8 +122,12 @@ class Product extends Model
 
     public function getFinalPriceAttribute()
     {
-        // استفاده از cache برای کاهش محاسبات
-        return Cache::remember("product_final_price_{$this->id}", 3600, function () {
+        $cacheKey = "product_final_price_{$this->id}";
+
+        // محاسبه زمان انقضای کش بر اساس تاریخ پایان تخفیف
+        $ttl = $this->calculateCacheTTL();
+
+        return Cache::remember($cacheKey, $ttl, function () {
             $now = now();
             $hasValidDiscount = !empty($this->discount_value) &&
                 !empty($this->discount_type) &&
@@ -138,6 +143,29 @@ class Product extends Model
             }
             return $this->price;
         });
+    }
+
+    /**
+     * محاسبه زمان انقضای کش بر اساس تاریخ پایان تخفیف
+     */
+    protected function calculateCacheTTL()
+    {
+        // اگر تخفیف تاریخ پایان داره
+        if (!empty($this->discount_end_at)) {
+            $now = now();
+            $end = Carbon::parse($this->discount_end_at);
+
+            // اگر تاریخ پایان گذشته، کش رو برای ۱ دقیقه نگه دار
+            if ($end <= $now) {
+                return 60;
+            }
+
+            // زمان باقی مونده تا پایان تخفیف + ۱ دقیقه
+            return $end->diffInSeconds($now) + 60;
+        }
+
+        // اگر تخفیف نامحدود یا بدون تاریخ پایان هست، ۱ ساعت کش کن
+        return 3600;
     }
     protected static function booted()
     {
