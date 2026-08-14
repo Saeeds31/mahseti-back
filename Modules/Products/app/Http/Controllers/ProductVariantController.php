@@ -137,7 +137,7 @@ class ProductVariantController extends Controller
             'variants.*.discount_value' => ['nullable', 'integer', 'min:0'],
             'variants.*.discount_type' => ['nullable', 'in:percent,fixed'],
             'variants.*.discount_start_at' => ['nullable', 'date'],
-            'variants.*.discount_end_at' => ['nullable', 'date', 'after:variants.*.discount_start_at'],
+            'variants.*.discount_end_at' => ['nullable', 'date'],
             'variants.*.values' => 'required|array',
             'variants.*.values.*' => 'exists:attribute_values,id',
         ]);
@@ -194,11 +194,10 @@ class ProductVariantController extends Controller
                     $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
                     $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
                 } else {
-                    // از تخفیف محصول استفاده کن
-                    $variantFields['discount_value'] = $product->discount_value;
-                    $variantFields['discount_type'] = $product->discount_type;
-                    $variantFields['discount_start_at'] = $product->discount_start_at;
-                    $variantFields['discount_end_at'] = $product->discount_end_at;
+                    $variantFields['discount_value'] = null;
+                    $variantFields['discount_type'] = null;
+                    $variantFields['discount_start_at'] = null;
+                    $variantFields['discount_end_at'] = null;
                 }
 
                 $variant->update($variantFields);

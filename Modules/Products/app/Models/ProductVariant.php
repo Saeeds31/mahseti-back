@@ -28,8 +28,6 @@ class ProductVariant extends Model
     protected $appends = ['final_price'];
 
     protected $casts = [
-        'discount_start_at' => 'datetime',
-        'discount_end_at' => 'datetime',
         'price' => 'integer',
         'stock' => 'integer',
         'discount_value' => 'integer',
@@ -80,12 +78,6 @@ class ProductVariant extends Model
                     return max(0, $this->price - $this->discount_value);
                 }
             }
-
-            // اگر تنوع تخفیف نداشت، از محصول بگیر
-            if ($this->product) {
-                return $this->product->final_price;
-            }
-
             return $this->price;
         });
     }

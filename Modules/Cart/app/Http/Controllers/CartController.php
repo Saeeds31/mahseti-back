@@ -33,7 +33,7 @@ class CartController extends Controller
 
             $cartItem->quantity = $qty;
             $cartItem->price_original = (int) $variant->price;
-            $cartItem->price_final = $this->calculateFinalUnitPrice($variant->price, $variant->product);
+            $cartItem->price_final = $this->calculateFinalUnitPrice($variant);
             $cartItem->save();
         }
 
@@ -53,7 +53,7 @@ class CartController extends Controller
             $current_base_price = (int) $variant->price;
 
             // recalc final_unit_price based on product discount rules
-            $final_unit_price = $this->calculateFinalUnitPrice($current_base_price, $product);
+            $final_unit_price = $this->calculateFinalUnitPrice($variant);
 
             // اگر قیمت پایه‌ی ذخیره‌شده در کارت با قیمت فعلی variant فرق داشت -> گزارش و بروزرسانی
             if ((int)$item->price_original !== $current_base_price) {
@@ -153,7 +153,7 @@ class CartController extends Controller
         $product = $variant->product;
 
         // final unit price after product discount
-        $finalUnitPrice = $this->calculateFinalUnitPrice($basePrice, $product);
+        $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
 
         $item = Cart::where('user_id', $user->id)
             ->where('variant_id', $variant->id)
@@ -227,7 +227,7 @@ class CartController extends Controller
         // recalc base and final price based on current product/variant
         $basePrice = (int)$variant->price;
         $product = $variant->product;
-        $finalUnitPrice = $this->calculateFinalUnitPrice($basePrice, $product);
+        $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
 
         $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
 
@@ -263,7 +263,7 @@ class CartController extends Controller
         // sync prices before increasing
         $basePrice = (int)$variant->price;
         $product = $variant->product;
-        $finalUnitPrice = $this->calculateFinalUnitPrice($basePrice, $product);
+        $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
 
         $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
 
@@ -301,7 +301,7 @@ class CartController extends Controller
         // sync prices before decreasing
         $basePrice = (int)$variant->price;
         $product = $variant->product;
-        $finalUnitPrice = $this->calculateFinalUnitPrice($basePrice, $product);
+        $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
 
         $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
 
@@ -355,25 +355,31 @@ class CartController extends Controller
      * - basePrice: قیمت پایه (از variant->price)
      * - $product: مدل Product که شامل discount_type, discount_value است
      */
-    protected function calculateFinalUnitPrice(int $basePrice, ?Product $product): int
+    protected function calculateFinalUnitPrice(ProductVariant $variant)
     {
-        if (!$product) {
-            return $basePrice;
+        if (!$variant) {
+            return 0;
         }
+        $now = now();
+        $basePrice = $variant->price;
+        // بررسی تخفیف خود تنوع
+        $hasVariantDiscount = !empty($variant->discount_value) &&
+            !empty($variant->discount_type) &&
+            (empty($variant->discount_start_at) || $variant->discount_start_at <= $now) &&
+            (empty($variant->discount_end_at) || $variant->discount_end_at > $now);
 
-        $discountType = $product->discount_type; // 'percent' | 'fixed' | null
-        $discountValue = $product->discount_value ?? 0;
-
-        if ($discountType === 'percent' && $discountValue > 0) {
-            $final = $basePrice - intval(round($basePrice * ($discountValue / 100)));
-            return max(0, $final);
+        if ($hasVariantDiscount) {
+            $discountType = $variant->discount_type;
+            $discountValue = $variant->discount_value ?? 0;
+            if ($discountType === 'percent' && $discountValue > 0) {
+                $final = $basePrice - intval(round($basePrice * ($discountValue / 100)));
+                return max(0, $final);
+            }
+            if ($discountType === 'fixed' && $discountValue > 0) {
+                $final = $basePrice - intval($discountValue);
+                return max(0, $final);
+            }
         }
-
-        if ($discountType === 'fixed' && $discountValue > 0) {
-            $final = $basePrice - intval($discountValue);
-            return max(0, $final);
-        }
-
         return $basePrice;
     }
 }

@@ -81,7 +81,7 @@ class ProductsController extends Controller
         // ساخت تنوع پیش فرض
         $variantData = [
             'price' => $product->price,
-            'stock' => $product->stock,
+            'stock' => $product->stock ?? 0,
             'sku' => $product->sku,
         ];
 
@@ -428,7 +428,7 @@ class ProductsController extends Controller
                 if (!isset($attributesById[$attr->id])) {
                     $attributesById[$attr->id] = [
                         'id' => $attr->id,
-                        'title' => $attr->title,
+                        'title' => $attr->name,
                         'values' => []
                     ];
                     $attributeOrder[] = $attr->id;
@@ -457,11 +457,26 @@ class ProductsController extends Controller
         }
 
         // --- ساخت nested_map تو در تو ---
+        // --- ساخت nested_map تو در تو بر اساس ترتیب attributeOrder ---
         $nestedMap = [];
-
         foreach ($variants as $variant) {
-            $valueIds = $variant->values->pluck('id')->toArray();
-            sort($valueIds, SORT_NUMERIC);
+            // دریافت مقادیر ویژگی‌ها به همراه attribute_id
+            $valueData = $variant->values->map(function ($v) {
+                return [
+                    'value_id' => $v->id,
+                    'attribute_id' => $v->attribute->id
+                ];
+            })->toArray();
+
+            // مرتب‌سازی بر اساس attributeOrder
+            usort($valueData, function ($a, $b) use ($attributeOrder) {
+                $posA = array_search($a['attribute_id'], $attributeOrder);
+                $posB = array_search($b['attribute_id'], $attributeOrder);
+                return $posA - $posB;
+            });
+
+            // استخراج فقط value_idها به ترتیب جدید
+            $valueIds = array_column($valueData, 'value_id');
 
             $variantSummary = [
                 'id' => $variant->id,
@@ -473,7 +488,7 @@ class ProductsController extends Controller
                     return [
                         'id' => $v->id,
                         'attribute_id' => $v->attribute->id,
-                        'attribute' => $v->attribute->title,
+                        'attribute' => $v->attribute->name,
                         'value' => $v->value
                     ];
                 })->values()
@@ -485,7 +500,7 @@ class ProductsController extends Controller
                 if (!isset($ref[$vid])) $ref[$vid] = [];
                 $ref = &$ref[$vid];
             }
-            $ref = $variantSummary; // انتهای شاخه variant
+            $ref = $variantSummary;
         }
         if ($user) {
             $isInWishList = Wishlist::where('user_id', $user->id)->where('product_id', $product->id)->exists();
@@ -513,12 +528,17 @@ class ProductsController extends Controller
                         'sku' => $variant->sku,
                         'price' => $variant->price,
                         'stock' => $variant->stock,
+                        'discount_start_at' => $variant->discount_start_at,
+                        'discount_end_at' => $variant->discount_end_at,
+                        'discount_value' => $variant->discount_value,
+                        'discount_type' => $variant->discount_type,
+                        'final_price' => $variant->final_price,
                         'is_available' => $variant->stock > 0,
                         'values' => $variant->values->map(function ($v) {
                             return [
                                 'id' => $v->id,
                                 'attribute_id' => $v->attribute->id,
-                                'attribute' => $v->attribute->title,
+                                'attribute' => $v->attribute->name,
                                 'value' => $v->value
                             ];
                         })->values()
@@ -539,7 +559,6 @@ class ProductsController extends Controller
                 $q->whereIn('categories.id', $categoryIds);
             })
             ->where('id', '!=', $product->id) // حذف محصول اصلی
-            ->select('id', 'title', 'main_image', 'price', 'final_price')
             ->with([
                 'images:id,product_id,path',
                 'variants:id,product_id,price,stock'
@@ -551,7 +570,6 @@ class ProductsController extends Controller
             $similar = Product::where('status', 'published')
                 ->where('id', '!=', $product->id)
                 ->orderBy('created_at', 'desc')
-                ->select('id', 'title', 'main_image', 'price', 'final_price')
                 ->limit(10)
                 ->get();
         }
