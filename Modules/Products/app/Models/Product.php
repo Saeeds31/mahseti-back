@@ -126,13 +126,14 @@ class Product extends Model
             $now = now();
             $hasValidDiscount = !empty($this->discount_value) &&
                 !empty($this->discount_type) &&
+                (empty($this->discount_start_at) || $this->discount_start_at <= $now) &&
                 (empty($this->discount_end_at) || $this->discount_end_at > $now);
 
             if ($hasValidDiscount) {
                 if ($this->discount_type === 'percent') {
-                    return $this->price - ($this->price * $this->discount_value / 100);
+                    return max(0, $this->price - ($this->price * $this->discount_value / 100));
                 } elseif ($this->discount_type === 'fixed') {
-                    return $this->price - $this->discount_value;
+                    return max(0, $this->price - $this->discount_value);
                 }
             }
             return $this->price;

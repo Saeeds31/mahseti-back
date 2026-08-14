@@ -414,7 +414,6 @@ class ProductsController extends Controller
         ])
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
-
         $variants = $product->variants;
 
         // --- attributes آماده برای فرانت ---
