@@ -18,70 +18,96 @@ class CartController extends Controller
         $user = $request->user();
         $variantIds = explode(',', $request->get('variant_ids', ''));
         $quantities = explode(',', $request->get('quantities', ''));
+
+        // 1. پردازش آیتم‌های جدید
         foreach ($variantIds as $index => $variantId) {
             $qty = isset($quantities[$index]) ? (int)$quantities[$index] : 1;
-            // بررسی وجود variant
+
             $variant = ProductVariant::find($variantId);
             if (!$variant) {
                 continue;
             }
-            // پیدا کردن یا ساختن رکورد در cart
+
             $cartItem = Cart::firstOrNew([
-                'user_id'    => $request->user()->id,
+                'user_id' => $request->user()->id,
                 'variant_id' => $variantId,
             ]);
+
+            $availableStock = (int)$variant->stock;
+            $alertMessage = null;
+
+            // اگر موجودی صفر است، آیتم را حذف کن
+            if ($availableStock <= 0) {
+                if ($cartItem->exists) {
+                    $cartItem->delete();
+                }
+                continue;
+            }
+
+            if ($qty > $availableStock) {
+                $alertMessage = "موجودی کافی نیست. حداکثر موجودی: {$availableStock}";
+                $qty = $availableStock;
+            }
 
             $cartItem->quantity = $qty;
             $cartItem->price_original = (int) $variant->price;
             $cartItem->price_final = $this->calculateFinalUnitPrice($variant);
+            $cartItem->alert_message = $alertMessage;
             $cartItem->save();
         }
 
+        // 2. بررسی و پاکسازی آیتم‌های موجود در سبد
         $items = Cart::with('variant.product', 'variant.values.attribute')
             ->where('user_id', $user->id)
             ->get();
 
-        $price_changes = [];
-        $subtotal = 0; // جمع قیمت نهایی (price_final * qty)
-        $product_discount_total = 0; // مجموع تخفیف محصولات از روی اختلاف original - final
+        $subtotal = 0;
+        $product_discount_total = 0;
+        $itemsToRemove = [];
         $total_payable = 0;
-        foreach ($items as $item) {
+        foreach ($items as $index => $item) {
             $variant = $item->variant;
-            $product = $variant->product;
 
-            // current base price from variant
-            $current_base_price = (int) $variant->price;
-
-            // recalc final_unit_price based on product discount rules
-            $final_unit_price = $this->calculateFinalUnitPrice($variant);
-
-            // اگر قیمت پایه‌ی ذخیره‌شده در کارت با قیمت فعلی variant فرق داشت -> گزارش و بروزرسانی
-            if ((int)$item->price_original !== $current_base_price) {
-                $price_changes[] = [
-                    'variant_id'  => $item->variant_id,
-                    'old_price'   => (int)$item->price_original,
-                    'new_price'   => $current_base_price,
-                ];
-
-                // آپدیت قیمت‌ها در سبد براساس قیمت جدید و تخفیف محصول
-                $item->price_original = $current_base_price;
-                $item->price_final = $final_unit_price;
-                $item->save();
-            } else {
-                // ممکن است product discount تغییر کرده باشد — در اینجا هم sync می‌کنیم
-                if ((int)$item->price_final !== (int)$final_unit_price) {
-                    $price_changes[] = [
-                        'variant_id' => $item->variant_id,
-                        'old_price_final' => (int)$item->price_final,
-                        'new_price_final' => (int)$final_unit_price,
-                    ];
-
-                    $item->price_final = $final_unit_price;
-                    $item->save();
-                }
+            // ❌ اگر تنوع وجود نداشته باشد، حذف کن
+            if (!$variant) {
+                $itemsToRemove[] = $item->id;
+                continue;
             }
 
-            // مقادیر ردیف را برای خروجی آماده می‌کنیم
+            $product = $variant->product;
+            $availableStock = (int)$variant->stock;
+
+            // ❌ اگر موجودی صفر یا منفی است، حذف کن
+            if ($availableStock <= 0) {
+                $itemsToRemove[] = $item->id;
+                continue;
+            }
+
+            // ❌ اگر تعداد درخواستی بیشتر از موجودی است، اصلاح کن
+            if ((int)$item->quantity > $availableStock) {
+                $item->quantity = $availableStock;
+                $item->alert_message = "موجودی به {$availableStock} عدد کاهش یافت";
+                $item->save();
+            }
+
+            // به‌روزرسانی قیمت‌ها
+            $current_base_price = (int) $variant->price;
+            $final_unit_price = $this->calculateFinalUnitPrice($variant);
+
+            if ((int)$item->price_original !== $current_base_price) {
+                $item->price_original = $current_base_price;
+                $item->alert_message = $item->alert_message . " - تغییراتی در قیمت اصلی محصول به نسبت قبل داده شده است";
+                $item->save();
+            }
+            if ((int)$item->price_final !== (int)$final_unit_price) {
+
+                $item->price_final = $final_unit_price;
+                $item->alert_message = $item->alert_message . " - تغییراتی در قیمت نهایی محصول به نسبت قبل داده شده است";
+
+                $item->save();
+            }
+
+            // محاسبه مقادیر ردیف
             $line_original_total = (int)$item->price_original * (int)$item->quantity;
             $line_final_total = (int)$item->price_final * (int)$item->quantity;
             $line_discount = $line_original_total - $line_final_total;
@@ -91,8 +117,17 @@ class CartController extends Controller
             $item->line_discount = $line_discount;
 
             $subtotal += $line_original_total;
-            $product_discount_total += $line_discount;
             $total_payable += $line_final_total;
+            $product_discount_total += $line_discount;
+        }
+
+        // 3. حذف آیتم‌های نامعتبر
+        if (!empty($itemsToRemove)) {
+            Cart::whereIn('id', $itemsToRemove)->delete();
+            // حذف آیتم‌های حذف شده از مجموعه
+            $items = $items->filter(function ($item) use ($itemsToRemove) {
+                return !in_array($item->id, $itemsToRemove);
+            });
         }
 
         return response()->json([
@@ -100,30 +135,35 @@ class CartController extends Controller
             'items' => $items->map(function ($it) {
                 return [
                     'id' => $it->id,
-                    'product_id' => $it->product->id,
                     'variant_id' => $it->variant_id,
-                    'title' => $it->product->title,
-                    'image' => $it->product->main_image,
+                    'title' => $it->variant->product->title ?? null,
+                    'product_id' => $it->variant->product->id ?? null,
+                    'product_slug' => $it->variant->product->slug ?? null,
+                    'image' => $it->variant->product->main_image ?? null,
                     'quantity' => (int)$it->quantity,
                     'price_original' => (int)$it->price_original,
                     'price_final' => (int)$it->price_final,
                     'line_original_total' => (int)$it->line_original_total,
                     'line_final_total' => (int)$it->line_final_total,
                     'line_discount' => (int)$it->line_discount,
+                    'alert_message' => $it->alert_message,
                     'variant' => $it->variant ? [
                         'id' => $it->variant->id,
                         'sku' => $it->variant->sku ?? null,
                         'attributes' => $it->variant->values->map(function ($val) {
-                            return ['id' => $val->id, 'name' => $val->attribute->name, 'value' => $val->value,];
+                            return [
+                                'id' => $val->id,
+                                'name' => $val->attribute->name,
+                                'value' => $val->value,
+                            ];
                         })->toArray(),
                     ] : null,
                 ];
             }),
-            'price_changes' => $price_changes,
             'summary' => [
                 'subtotal' => (int)$subtotal,
                 'product_discount_total' => (int)$product_discount_total,
-                'total_payable' => (int)$total_payable, // اینجا فقط محصولات؛ هزینه حمل و کپن در متد checkoutSummary اضافه می‌شود
+                'total_payable' => (int)$total_payable,
             ],
         ]);
     }
@@ -173,6 +213,7 @@ class CartController extends Controller
             $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
 
             $item->quantity = $newQuantity;
+            $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
             $item->price_original = $basePrice;
             $item->price_final = $finalUnitPrice;
             $item->save();
@@ -180,7 +221,6 @@ class CartController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'موجودی سبد بروزرسانی شد',
-                'price_changed' => $price_changed,
                 'item' => $item
             ]);
         }
@@ -234,12 +274,13 @@ class CartController extends Controller
 
         $item->quantity = $request->quantity;
         $item->price_original = $basePrice;
+        $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
+        $item->alert_message = null;
         $item->price_final = $finalUnitPrice;
         $item->save();
 
         return response()->json([
             'success' => true,
-            'price_changed' => $price_changed,
             'item' => $item,
             'message' => 'تعداد آیتم با موفقیت بروزرسانی شد'
         ]);
@@ -270,13 +311,13 @@ class CartController extends Controller
 
         $item->quantity += 1;
         $item->price_original = $basePrice;
+        $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
         $item->price_final = $finalUnitPrice;
         $item->save();
 
         return response()->json([
             'success' => true,
             'message' => 'یک عدد اضافه شد',
-            'price_changed' => $price_changed,
             'data'    => $item
         ]);
     }
@@ -309,12 +350,12 @@ class CartController extends Controller
         $item->quantity -= 1;
         $item->price_original = $basePrice;
         $item->price_final = $finalUnitPrice;
+        $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
         $item->save();
 
         return response()->json([
             'success' => true,
             'message' => 'یک عدد کم شد',
-            'price_changed' => $price_changed,
             'data'    => $item
         ]);
     }

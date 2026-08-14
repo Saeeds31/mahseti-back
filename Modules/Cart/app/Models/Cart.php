@@ -16,6 +16,8 @@ class Cart extends Model
         'quantity',
         'price_original',
         'price_final',
+        'alert_message'
+
     ];
 
     public function variant()
