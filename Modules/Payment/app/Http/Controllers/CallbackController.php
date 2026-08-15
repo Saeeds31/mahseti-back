@@ -4,17 +4,21 @@ namespace Modules\Payment\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Orders\Models\Order;
 use Modules\Payment\Services\PaymentVerifier;
 use Modules\Payment\Services\PaymentCompletionService;
 use Modules\Wallet\Models\Wallet;
 use Modules\Payment\Models\GatewayCallbackLog;
+use Modules\Payment\Services\PaymentFailureService;
 
 class CallbackController extends Controller
 {
     public function __construct(
         protected PaymentVerifier $paymentVerifier,
         protected PaymentCompletionService $paymentCompletionService,
+        protected PaymentFailureService $paymentFailureService,
     ) {}
 
     public function __invoke(
@@ -63,7 +67,38 @@ class CallbackController extends Controller
                 'exception' => (string) $e,
             ]);
             report($e);
+            try {
 
+                $authority = $request->input('Authority')
+                    ?? $request->input('trackId');
+
+                if ($authority) {
+
+                    $transaction =  GatewayTransaction::query()
+                        ->where('authority', $authority)
+                        ->with('payable')
+                        ->first();
+
+                    if (
+                        $transaction &&
+                        $transaction->payable instanceof Order
+                    ) {
+                        $this->paymentFailureService->failOrder(
+                            order: $transaction->payable,
+                            gatewayTransaction: $transaction,
+                            reason: $e->getMessage()
+                        );
+                    }
+                }
+            } catch (\Throwable $failureException) {
+
+                Log::channel('payment')->error(
+                    'Payment failure handling failed',
+                    [
+                        'exception' => (string) $failureException,
+                    ]
+                );
+            }
             return redirect(
                 config('payment.front_url')
                     . '/payment/result?status=failed'
