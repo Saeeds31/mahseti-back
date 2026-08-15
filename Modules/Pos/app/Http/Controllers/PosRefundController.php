@@ -13,9 +13,13 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Modules\Pos\Models\PosOrderItem;
 use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
 
 class PosRefundController extends Controller
 {
+    public function __construct(
+        protected ProductStockService  $productStockService,
+    ) {}
     /**
      * نمایش لیست برگشتی‌ها
      */
@@ -174,6 +178,7 @@ class PosRefundController extends Controller
                     $variant = ProductVariant::find($orderItem->product_variant_id);
                     if ($variant) {
                         $variant->increment('stock', $itemData['quantity']);
+                        $this->productStockService->sync($variant->product);
                     }
                 }
 

@@ -13,9 +13,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
 
 class PosOrderController extends Controller
 {
+    public function __construct(
+        protected ProductStockService  $productStockService,
+    ) {}
     /**
      * دریافت لیست فروشندگان برای فیلتر
      */
@@ -430,6 +434,7 @@ class PosOrderController extends Controller
 
                 // کم کردن موجودی از واریانت
                 $variant->decrement('stock', $item['quantity']);
+                $this->productStockService->sync($variant->product);
             }
 
             // ۶. ثبت تراکنش‌های پرداخت
@@ -487,6 +492,7 @@ class PosOrderController extends Controller
             foreach ($order->items as $item) {
                 if ($item->variant) {
                     $item->variant->increment('stock', $item->quantity);
+                    $this->productStockService->sync($item->variant->product);
                 }
             }
 

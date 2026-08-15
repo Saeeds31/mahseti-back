@@ -12,10 +12,14 @@ use Modules\Products\Http\Requests\ProductStoreRequest;
 use Modules\Products\Http\Requests\ProductUpdateRequest;
 use Modules\Products\Models\Product;
 use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
 use Modules\Wishlist\Models\Wishlist;
 
 class ProductsController extends Controller
 {
+    public function __construct(
+        protected ProductStockService  $productStockService,
+    ) {}
     // لیست محصولات
     public function index(Request $request)
     {
@@ -101,6 +105,8 @@ class ProductsController extends Controller
             "notification_product",
             ['product' => $product->id]
         );
+        $this->productStockService->sync($product);
+
         return response()->json($product->load('categories', 'images'));
     }
     // نمایش یک محصول
@@ -228,6 +234,7 @@ class ProductsController extends Controller
             "notification_product",
             ['product' => $product->id]
         );
+        $this->productStockService->sync($product);
 
         return response()->json($product->load('categories', 'images', 'variants'));
     }
@@ -295,7 +302,7 @@ class ProductsController extends Controller
         // کوئری پایه
         $query = Product::with(['categories', 'variants.values'])
             ->whereIn('sales_channel', ['online_only', 'both'])
-            ->where('status', 'published')
+            ->where('status', '!=', 'draft')
             ->select('products.*');
 
         // 1. فیلتر جستجو
@@ -513,6 +520,7 @@ class ProductsController extends Controller
                 'product' => [
                     'id' => $product->id,
                     'title' => $product->title,
+                    'status' => $product->status,
                     'description' => $product->description,
                     'price' => $product->price,
                     'final_price' => $product->final_price,

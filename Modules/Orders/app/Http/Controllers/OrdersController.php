@@ -20,6 +20,7 @@ use Modules\Orders\Models\Order;
 use Modules\Payment\Services\PaymentCompletionService;
 use Modules\Payment\Services\PaymentService;
 use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
 use Modules\Shipping\Models\Shipping;
 use Modules\Shipping\Services\ShippingService;
 use Modules\Users\Models\User;
@@ -31,6 +32,7 @@ class OrdersController extends Controller
     public function __construct(
         protected PaymentService $paymentService,
         protected WalletService $walletService,
+        protected ProductStockService $productStockService,
         protected PaymentCompletionService $paymentCompletionService,
         protected NotificationService $notifications,
         protected SmsService $smsService,
@@ -222,6 +224,7 @@ class OrdersController extends Controller
 
                 // کم کردن موجودی
                 $variant->decrement('stock', $item['quantity']);
+                $this->productStockService->sync($variant->product);
             }
             // 5. کم کردن موجودی کیف پول
             $user->wallet()->update([
@@ -266,6 +269,7 @@ class OrdersController extends Controller
                     $variant = $item->variant;
                     if ($variant) {
                         $variant->increment('stock', $item->quantity);
+                        $this->productStockService->sync($variant->product);
                     }
                 }
             }
@@ -486,14 +490,7 @@ class OrdersController extends Controller
             }
         }
 
-        // 9. بررسی موجودی محصولات
-        foreach ($cartItems as $item) {
-            if ($item->variant->stock < $item->quantity) {
-                return response()->json(['message' => "موجودی {$item->variant->product->title} کافی نیست"], 422);
-            }
-        }
-
-        // 10. تعیین نوع رزرو و تاریخ انقضا
+        // 9. تعیین نوع رزرو و تاریخ انقضا
         $reservationType = $request->input('reservation_type', 'none');
         $reservedUntil = null;
 
@@ -502,7 +499,7 @@ class OrdersController extends Controller
             $reservedUntil = now()->addDays($days);
         }
 
-        // 11. ایجاد سفارش و تراکنش‌ها
+        // 10. شروع تراکنش با قفل کامل
         return DB::transaction(function () use (
             $user,
             $cartItems,
@@ -519,6 +516,41 @@ class OrdersController extends Controller
             $reservationType,
             $reservedUntil
         ) {
+            // ================================================================
+            // مرحله 1: قفل کردن و بررسی موجودی همه تنوع‌ها
+            // ================================================================
+
+            // گرفتن ID همه تنوع‌های موجود در سبد خرید
+            $variantIds = $cartItems->pluck('variant.id')->unique()->toArray();
+
+            // ★ قفل کردن همه تنوع‌ها برای جلوگیری از خرید همزمان
+            $variants = ProductVariant::whereIn('id', $variantIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+
+            // بررسی موجودی برای هر آیتم
+            foreach ($cartItems as $item) {
+                $variant = $variants->get($item->variant->id);
+
+                // اگر تنوع وجود نداشت
+                if (!$variant) {
+                    throw new \Exception("تنوع محصول یافت نشد: {$item->variant->id}");
+                }
+
+                // اگر موجودی کافی نبود
+                if ($variant->stock < $item->quantity) {
+                    throw new \Exception(
+                        "موجودی {$variant->product->title} کافی نیست. " .
+                            "موجودی فعلی: {$variant->stock} - درخواستی: {$item->quantity}"
+                    );
+                }
+            }
+
+            // ================================================================
+            // مرحله 2: بررسی parent_order (اگر وجود داشته باشد)
+            // ================================================================
+
             // اگر parent_order_id وجود داشته باشد، سفارش را به عنوان فرزند ثبت می‌کنیم
             $parentOrderId = $request->input('parent_order_id');
 
@@ -538,6 +570,10 @@ class OrdersController extends Controller
                 }
             }
 
+            // ================================================================
+            // مرحله 3: ایجاد سفارش
+            // ================================================================
+
             $order = Order::create([
                 'user_id' => $user->id,
                 'address_id' => $address->id,
@@ -556,20 +592,33 @@ class OrdersController extends Controller
                 'parent_order_id' => $parentOrderId,
             ]);
 
-            // 12. ثبت آیتم‌ها و کم کردن موجودی (همون روال قبلی)
+            // ================================================================
+            // مرحله 4: ثبت آیتم‌ها و کم کردن موجودی
+            // ================================================================
+
             foreach ($cartItems as $item) {
+                // گرفتن تنوع قفل شده
+                $variant = $variants->get($item->variant->id);
+
+                // ثبت آیتم سفارش
                 $order->items()->create([
-                    'product_id' => $item->variant->product_id,
-                    'product_variant_id' => $item->variant->id,
+                    'product_id' => $variant->product_id,
+                    'product_variant_id' => $variant->id,
                     'quantity' => $item->quantity,
                     'price' => $item->price_final,
                 ]);
 
-                // کم کردن موجودی مانند قبل
-                $item->variant->decrement('stock', $item->quantity);
+                // ★ کم کردن موجودی از روی مدل قفل شده
+                $variant->decrement('stock', $item->quantity);
+
+                // ★ همگام‌سازی موجودی محصول اصلی
+                $this->productStockService->sync($variant->product);
             }
 
-            // 13. اعمال کوپن
+            // ================================================================
+            // مرحله 5: اعمال کوپن (اگر وجود داشته باشد)
+            // ================================================================
+
             if ($coupon) {
                 (new CouponService)
                     ->applyCoupon($coupon, $user->id);
@@ -577,7 +626,10 @@ class OrdersController extends Controller
                 $order->save();
             }
 
-            // 14. پرداخت از کیف پول
+            // ================================================================
+            // مرحله 6: پرداخت از کیف پول (اگر مبلغی از کیف پول استفاده شود)
+            // ================================================================
+
             if ($fromWallet > 0) {
                 $this->walletService->withdraw(
                     wallet: $user->wallet,
@@ -587,19 +639,30 @@ class OrdersController extends Controller
                 );
             }
 
-            // 15. پاک کردن سبد خرید
+            // ================================================================
+            // مرحله 7: پاک کردن سبد خرید
+            // ================================================================
+
             Cart::where('user_id', $user->id)->delete();
 
-            // 16. اگر پرداخت آنلاین نیاز است → درگاه 
+            // ================================================================
+            // مرحله 8: پرداخت آنلاین (اگر نیاز باشد)
+            // ================================================================
+
             if ($toPayOnline > 0) {
                 $gateway = $request->gateway ?? config('payment.default');
 
-                $gatewayUrl = $this->paymentService->pay(
-                    payable: $order,
-                    user: $user,
-                    amount: $toPayOnline,
-                    gateway: $gateway,
-                );
+                try {
+                    $gatewayUrl = $this->paymentService->pay(
+                        payable: $order,
+                        user: $user,
+                        amount: $toPayOnline,
+                        gateway: $gateway,
+                    );
+                } catch (\Exception $e) {
+                    // اگر درگاه خطا داد، تراکنش Rollback می‌شود
+                    throw new \Exception("خطا در اتصال به درگاه پرداخت: " . $e->getMessage());
+                }
 
                 $this->notifications->create(
                     "سفارش در انتظار پرداخت",
@@ -619,7 +682,10 @@ class OrdersController extends Controller
                 ], 201);
             }
 
-            // 17. اگر سفارش رزرو است (پرداخت کامل شده با کیف پول یا نیازی به پرداخت نیست)
+            // ================================================================
+            // مرحله 9: سفارش رزرو (پرداخت کامل شده با کیف پول یا نیازی به پرداخت نیست)
+            // ================================================================
+
             if ($reservationType !== 'none') {
                 return response()->json([
                     'order' => $order->load('items'),
@@ -632,7 +698,10 @@ class OrdersController extends Controller
                 ], 201);
             }
 
-            // 18. تکمیل سفارش با کیف پول (برای سفارش‌های عادی)
+            // ================================================================
+            // مرحله 10: تکمیل سفارش با کیف پول (برای سفارش‌های عادی)
+            // ================================================================
+
             $this->paymentCompletionService->completeWalletOrder($order);
 
             return response()->json([
@@ -640,7 +709,7 @@ class OrdersController extends Controller
                 'status' => 'wallet',
                 'message' => 'سفارش با موفقیت ثبت شد.',
             ], 201);
-        });
+        }); // پایان تراکنش
     }
     public function checkoutSummary(Request $request)
     {
