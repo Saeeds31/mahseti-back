@@ -416,12 +416,13 @@ class ProductsController extends Controller
             'categories:id,title',
             'images:id,product_id,path',
             'variants.values.attribute',
-            'specifications',
+            'specifications.values',
             'comments'
         ])
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
         $variants = $product->variants;
+        $specs = $product->specifications_with_values;
 
         // --- attributes آماده برای فرانت ---
         $attributesById = [];
@@ -517,6 +518,7 @@ class ProductsController extends Controller
             'success' => true,
             'data' => [
                 'wishlist' => $isInWishList,
+                'specifications' => $specs,
                 'product' => [
                     'id' => $product->id,
                     'title' => $product->title,

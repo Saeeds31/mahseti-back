@@ -4,6 +4,8 @@ namespace Modules\Specifications\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Modules\Products\Models\Product;
+
 // use Modules\Specifications\Database\Factories\ProductSpecificationValueFactory;
 
 class ProductSpecificationValue extends Model
@@ -27,6 +29,6 @@ class ProductSpecificationValue extends Model
 
     public function product()
     {
-        return $this->belongsTo(\Modules\Products\Models\Product::class);
+        return $this->belongsTo(Product::class);
     }
 }

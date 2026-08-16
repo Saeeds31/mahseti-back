@@ -119,6 +119,26 @@ class Product extends Model
             ->withPivot('specification_value_id')
             ->withTimestamps();
     }
+    public function getSpecificationsWithValuesAttribute()
+    {
+        if (!$this->relationLoaded('specifications')) {
+            $this->load(['specifications' => function ($query) {
+                $query->with('values'); // Eager loading مقادیر
+            }]);
+        }
+
+        return $this->specifications->map(function ($spec) {
+            $selectedValueId = $spec->pivot->specification_value_id;
+            $selectedValue = $spec->values->firstWhere('id', $selectedValueId);
+
+            return [
+                'id' => $spec->id,
+                'title' => $spec->title,
+                'selected_value_id' => $selectedValueId,
+                'selected_value' => $selectedValue ? $selectedValue->value : null,
+            ];
+        });
+    }
 
     public function getFinalPriceAttribute()
     {
