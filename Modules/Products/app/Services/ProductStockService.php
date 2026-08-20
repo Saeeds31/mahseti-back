@@ -40,7 +40,11 @@ class ProductStockService
 
             $totalStock = (int) $variantsStats->total_stock;
             $hasAvailableVariant = $variantsStats->available_variants > 0;
-            $newStatus = $hasAvailableVariant ? 'published' : 'unpublished';
+            if ($lockedProduct->status === 'draft') {
+                $newStatus = 'draft'; // اگر پیش‌نویس بود، همان draft بماند
+            } else {
+                $newStatus = $hasAvailableVariant ? 'published' : 'unpublished';
+            }
 
             // 3. آماده‌سازی داده‌های به‌روزرسانی
             $updateData = [

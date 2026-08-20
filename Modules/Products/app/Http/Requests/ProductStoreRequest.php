@@ -22,6 +22,7 @@ class ProductStoreRequest extends FormRequest
             'discount_value' => ['nullable', 'integer', 'min:0', 'required_with:discount_type'],
             'discount_type' => ['nullable', 'in:percent,fixed', 'required_with:discount_value'],
             'discount_start_at'              => ['nullable', 'date'],
+            'published_at'              => ['nullable', 'date'],
             'discount_end_at'              => ['nullable', 'date'],
             'is_rechargeable'       => ['nullable', 'boolean'],
             'barcode'          => ['nullable', 'string', 'max:100'],

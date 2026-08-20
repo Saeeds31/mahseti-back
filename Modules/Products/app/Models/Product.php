@@ -26,6 +26,7 @@ class Product extends Model
         'meta_title',
         'meta_description',
         'status',
+        'published_at',
         'discount_value',
         'discount_type',
         'discount_start_at',
