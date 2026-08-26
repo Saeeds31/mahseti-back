@@ -5,6 +5,7 @@ namespace Modules\Products\Services;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Modules\Products\Models\Product;
+use Modules\StockAlerts\Services\StockAlertService;
 
 class ProductStockService
 {
@@ -66,6 +67,10 @@ class ProductStockService
 
                 $lockedProduct->update($updateData);
 
+                if ($isChanged && $newStatus === 'published' && $totalStock > 0) {
+                    // محصول موجود شده → پردازش درخواست‌ها
+                    app(StockAlertService::class)->processPendingAlerts($lockedProduct);
+                }
                 // 5. لاگ تغییرات
                 Log::info("محصول همگام‌سازی شد", [
                     'product_id' => $lockedProduct->id,

@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Modules\Addresses\Models\Address;
 use Modules\Users\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Modules\Coupons\Models\Coupon;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Shipping\Models\Shipping;
@@ -152,15 +153,72 @@ class Order extends Model
     }
     public static function dashboardReport()
     {
+        // وضعیت‌های معتبر برای سفارشات موفق
+        $validStatuses = ['paid', 'completed', 'shipped', 'delivered'];
+        // کوئری پایه برای سفارشات موفق
+        $baseQuery = self::where(function ($query) use ($validStatuses) {
+            $query->whereIn('status', $validStatuses)
+                ->orWhere('payment_status', 'paid');
+        });
         return [
-            'total_orders'   => self::count(),
-            'total_sales'    => self::sum('total'),
-            'total_discount' => self::sum('discount_amount'),
+            // تعداد کل سفارشات موفق
+            'total_orders' => $baseQuery->count(),
 
-            'today_orders'   => self::whereDate('created_at', Carbon::today())->count(),
-            'month_orders'   => self::whereMonth('created_at', Carbon::now()->month)->count(),
+            // مجموع مبلغ فروش (فقط سفارشات موفق)
+            'total_sales' => $baseQuery->sum('total'),
+
+            // مجموع تخفیف‌ها (فقط سفارشات موفق)
+            'total_discount' => $baseQuery->sum('discount_amount'),
+
+            // سفارشات امروز (موفق)
+            'today_orders' => self::where(function ($query) use ($validStatuses) {
+                $query->whereIn('status', $validStatuses)
+                    ->orWhere('payment_status', 'paid');
+            })->whereDate('created_at', Carbon::today())->count(),
+
+            // سفارشات ماه جاری (موفق)
+            'month_orders' => self::where(function ($query) use ($validStatuses) {
+                $query->whereIn('status', $validStatuses)
+                    ->orWhere('payment_status', 'paid');
+            })->whereMonth('created_at', Carbon::now()->month)
+                ->whereYear('created_at', Carbon::now()->year)
+                ->count(),
+
+            // میانگین مبلغ هر سفارش
+            'average_order_value' => $baseQuery->avg('total') ?? 0,
+
+            // بیشترین مبلغ سفارش
+            'max_order_value' => $baseQuery->max('total') ?? 0,
+
+            // کمترین مبلغ سفارش
+            'min_order_value' => $baseQuery->min('total') ?? 0,
+
+            // تعداد سفارشات امروز به تفکیک وضعیت
+            'today_status_breakdown' => self::whereDate('created_at', Carbon::today())
+                ->select('status', DB::raw('count(*) as count'))
+                ->groupBy('status')
+                ->get()
+                ->pluck('count', 'status')
+                ->toArray(),
+
+            // تعداد سفارشات ماه جاری به تفکیک روز
+            'monthly_daily_breakdown' => self::where(function ($query) use ($validStatuses) {
+                $query->whereIn('status', $validStatuses)
+                    ->orWhere('payment_status', 'paid');
+            })
+                ->whereMonth('created_at', Carbon::now()->month)
+                ->whereYear('created_at', Carbon::now()->year)
+                ->select(
+                    DB::raw('DATE(created_at) as date'),
+                    DB::raw('count(*) as count'),
+                    DB::raw('sum(total) as total_sales')
+                )
+                ->groupBy('date')
+                ->orderBy('date')
+                ->get(),
         ];
     }
+
 
     public function gatewayTransactions()
     {

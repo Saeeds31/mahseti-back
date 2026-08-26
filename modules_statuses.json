@@ -28,5 +28,6 @@
     "Gateway": true,
     "Notifications": true,
     "Payment": true,
-    "Pos": true
+    "Pos": true,
+    "StockAlerts": true
 }
