@@ -46,10 +46,19 @@ class StockAlertService
      */
     public function cancelRequest(Product $product, User $user): bool
     {
-        return StockAlerts::where('product_id', $product->id)
+        $deleted = StockAlerts::where('product_id', $product->id)
             ->where('user_id', $user->id)
             ->where('status', 'pending')
-            ->update(['status' => 'cancelled']) > 0;
+            ->delete();
+
+        if ($deleted > 0) {
+            Log::info("درخواست اطلاع‌رسانی حذف شد", [
+                'product_id' => $product->id,
+                'user_id' => $user->id,
+            ]);
+        }
+
+        return $deleted > 0;
     }
 
     /**
@@ -110,18 +119,22 @@ class StockAlertService
      */
     protected function sendStockAlertSms(User $user, Product $product): void
     {
-        // با توجه به کد ارسال پیامک موجود در سیستم شما
+        $productTitle = $this->getFirstWords($product->title, 4);
         app(SmsService::class)->sendToKavenegar(
-            'back-in-stock', // الگوی جدید
+            'back-in-stock',
             $user->mobile,
-            $product->id, // order id (اختیاری)
+            $product->id,
             [
-                'token20' => $user->getDisplayName(),
-                'token10' => $product->title, // یا بخشی از نام محصول
+                'token10' => $productTitle,
             ]
         );
     }
-
+    private function getFirstWords(string $text, int $wordCount = 2): string
+    {
+        $words = array_filter(explode(' ', trim($text)));
+        $firstWords = array_slice($words, 0, $wordCount);
+        return implode(' ', $firstWords);
+    }
     /**
      * بررسی وضعیت درخواست کاربر برای یک محصول
      */

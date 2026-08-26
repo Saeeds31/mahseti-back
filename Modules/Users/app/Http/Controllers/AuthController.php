@@ -35,7 +35,6 @@ class AuthController extends Controller
         $this->sendOtp($request->mobile);
         $otp = Otp::where('mobile', $request->mobile)->first();
         return response()->json([
-            'token' => $otp->token,
             'status' => 'register'
         ]);
     }
@@ -51,7 +50,7 @@ class AuthController extends Controller
         $user = User::where('mobile', $data['mobile'])->first();
 
         if (!$user || !Hash::check($data['password'], $user->password)) {
-            return response()->json(['message' => 'Invalid credentials'], 401);
+            return response()->json(['message' => 'اطلاعات کاربری اشتباه است'], 422);
         }
 
         $token = $user->createToken('auth_token')->plainTextToken;
@@ -86,7 +85,6 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'OTP sent',
             'success' => true,
-            'token' => $otp->token
         ]);
     }
     // 4) بررسی OTP
