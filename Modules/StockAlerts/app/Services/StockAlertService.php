@@ -2,6 +2,7 @@
 
 namespace Modules\StockAlerts\Services;
 
+use App\Services\SmsService;
 use Modules\Products\Models\Product;
 use Modules\Users\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -110,10 +111,10 @@ class StockAlertService
     protected function sendStockAlertSms(User $user, Product $product): void
     {
         // با توجه به کد ارسال پیامک موجود در سیستم شما
-        app()->make('sms.service')->sendToKavenegar(
+        app(SmsService::class)->sendToKavenegar(
             'back-in-stock', // الگوی جدید
             $user->mobile,
-            null, // order id (اختیاری)
+            $product->id, // order id (اختیاری)
             [
                 'token20' => $user->getDisplayName(),
                 'token10' => $product->title, // یا بخشی از نام محصول
