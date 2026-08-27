@@ -159,25 +159,27 @@ class OrdersController extends Controller
 
     public function storeInAdmin(Request $request)
     {
-        // پرداخت در پنل ادمین فقط با کیف پول هست
         $data = $request->validate([
-            'user_id'            => 'required|exists:users,id',
-            'address_id'         => 'required|exists:addresses,id',
+            'user_id' => 'required|exists:users,id',
+            'address_id' => 'required|exists:addresses,id',
             'shipping_id' => 'required|exists:shippings,id',
-            'subtotal'           => 'required|numeric|min:0',
-            'discount_amount'    => 'nullable|numeric|min:0',
-            'shipping_cost'      => 'nullable|numeric|min:0',
-            'total'              => 'required|numeric|min:0',
-            'items'              => 'required|array|min:1',
+            'subtotal' => 'required|numeric|min:0',
+            'discount_amount' => 'nullable|numeric|min:0',
+            'shipping_cost' => 'nullable|numeric|min:0',
+            'total' => 'required|numeric|min:0',
+            'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|exists:products,id',
             'items.*.product_variant_id' => 'required|exists:product_variants,id',
-            'items.*.quantity'   => 'required|integer|min:1',
-            'items.*.price'      => 'required|numeric|min:0',
+            'items.*.quantity' => 'required|integer|min:1',
+            'items.*.price' => 'required|numeric|min:0',
+            'parent_order_id' => 'nullable|exists:orders,id',
+            'reservation_type' => 'nullable|in:three_days,seven_days',
         ]);
 
         return DB::transaction(function () use ($data) {
             $user = User::with(['wallet'])->findOrFail($data['user_id']);
-            // 1. چک موجودی کیف پول
+
+            // ایجاد یا دریافت کیف پول
             if (empty($user->wallet)) {
                 Wallet::create([
                     'user_id' => $user->id,
@@ -185,62 +187,110 @@ class OrdersController extends Controller
                 ]);
                 $user->load('wallet');
             }
+
+            // بررسی موجودی کیف پول
             if ($user->wallet->balance < $data['total']) {
                 return response()->json(['message' => 'موجودی کیف پول کافی نیست'], 422);
             }
-            // 2. چک موجودی محصولات
+
+            // بررسی موجودی محصولات
             foreach ($data['items'] as $item) {
                 $variant = ProductVariant::findOrFail($item['product_variant_id']);
                 if ($variant->stock < $item['quantity']) {
                     return response()->json([
-                        'message' => "موجودی تنوع  {$variant->id} کافی نیست"
+                        'message' => "موجودی تنوع {$variant->id} کافی نیست"
                     ], 422);
                 }
             }
-            // 3. ایجاد سفارش
+
+            // بررسی parent_order در صورت وجود
+            $parentOrder = null;
+            if (!empty($data['parent_order_id'])) {
+                $parentOrder = Order::where('id', $data['parent_order_id'])
+                    ->where('user_id', $data['user_id'])
+                    ->where('status', 'reserved')
+                    ->where('reserved_until', '>', now())
+                    ->first();
+
+                if (!$parentOrder) {
+                    return response()->json([
+                        'message' => 'سفارش رزرو معتبر یافت نشد'
+                    ], 422);
+                }
+            }
+
+            // تعیین وضعیت سفارش
+            $orderStatus = 'paid';
+            $paymentStatus = 'paid';
+
+            // اگر parent_order وجود داشته باشد
+            if ($parentOrder) {
+                // سفارش فرزند به همان روش والد ثبت می‌شود
+                $orderStatus = 'paid';
+                $paymentStatus = 'paid';
+            } else if (!empty($data['reservation_type'])) {
+                // سفارش رزرو جدید
+                $orderStatus = 'reserved';
+                $paymentStatus = 'paid'; // چون از کیف پول پرداخت می‌شود
+            }
+
+            // ایجاد سفارش
             $order = Order::create([
-                'user_id'            => $data['user_id'],
-                'address_id'         => $data['address_id'],
+                'user_id' => $data['user_id'],
+                'address_id' => $data['address_id'],
                 'shipping_id' => $data['shipping_id'],
-                'subtotal'           => $data['subtotal'],
-                'discount_amount'    => $data['discount_amount'] ?? 0,
-                'shipping_cost'      => $data['shipping_cost'] ?? 0,
-                'total'              => $data['total'],
-                'payment_method'     => "wallet",
-                'payment_status'     => "paid",
-                'status'             => "paid",
+                'subtotal' => $data['subtotal'],
+                'discount_amount' => $data['discount_amount'] ?? 0,
+                'shipping_cost' => $data['shipping_cost'] ?? 0,
+                'total' => $data['total'],
+                'payment_method' => 'wallet',
+                'payment_status' => $paymentStatus,
+                'status' => $orderStatus,
+                'parent_order_id' => $parentOrder ? $data['parent_order_id'] : null,
+                'reservation_type' => empty($parentOrder) ? ($data['reservation_type'] ?? null) : null,
+                'reserved_until' => empty($parentOrder) && !empty($data['reservation_type'])
+                    ? now()->addDays($data['reservation_type'] === 'three_days' ? 3 : 7)
+                    : null,
             ]);
 
-            // 4. ثبت آیتم‌ها + کم کردن موجودی
+            // ثبت آیتم‌ها و کم کردن موجودی
             foreach ($data['items'] as $item) {
                 $variant = ProductVariant::findOrFail($item['product_variant_id']);
 
                 $order->items()->create([
-                    'product_id'         => $item['product_id'],
+                    'product_id' => $item['product_id'],
                     'product_variant_id' => $item['product_variant_id'],
-                    'quantity'           => $item['quantity'],
-                    'price'              => $item['price'],
+                    'quantity' => $item['quantity'],
+                    'price' => $item['price'],
                 ]);
 
-                // کم کردن موجودی
                 $variant->decrement('stock', $item['quantity']);
                 $this->productStockService->sync($variant->product);
             }
-            // 5. کم کردن موجودی کیف پول
+
+            // کم کردن موجودی کیف پول
             $user->wallet()->update([
                 'balance' => $user->wallet->balance - $data['total'],
             ]);
+
             $user->wallet->transactions()->create([
                 'type' => 'debit',
                 'amount' => $data['total'],
                 'description' => "پرداخت برای سفارش #{$order->id}",
             ]);
+
+            // ارسال نوتیفیکیشن
             $this->notifications->create(
                 "ثبت سفارش",
-                "یک سفارش در پنل ادمین ثبت شد",
+                $parentOrder
+                    ? "سفارش فرزند برای سفارش رزرو #{$parentOrder->id} در پنل ادمین ثبت شد"
+                    : (!empty($data['reservation_type'])
+                        ? "سفارش رزرو در پنل ادمین ثبت شد"
+                        : "یک سفارش در پنل ادمین ثبت شد"),
                 "notification_order",
                 ['order' => $order->id]
             );
+
             return response()->json($order->load(['items', 'user', 'address', 'shipping']), 201);
         });
     }
@@ -970,6 +1020,45 @@ class OrdersController extends Controller
             ->with(['address', 'shipping', 'items.product', 'items.variant'])
             ->orderBy('reserved_until', 'asc')
             ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $reservations
+        ]);
+    }
+    public function getUserReservations(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|exists:users,id'
+        ]);
+
+        $reservations = Order::where('user_id', $request->user_id)
+            ->where('status', 'reserved')
+            ->where('reserved_until', '>', now())
+            ->with(['address', 'shipping', 'items.product', 'items.variant'])
+            ->orderBy('reserved_until', 'asc')
+            ->get()
+            ->map(function ($order) {
+                return [
+                    'order_number' => $order->id,
+                    'receiver_name' => $order->address->receiver_name ?? 'نامشخص',
+                    'shipping_method' => $order->shipping->title ?? 'نامشخص',
+                    'shipping_id' => $order->shipping_id,
+                    'shipping_cost' => $order->shipping_cost,
+                    'address_id' => $order->address_id,
+                    'total' => $order->total,
+                    'reserved_until' => $order->reserved_until,
+                    'items' => $order->items->map(function ($item) {
+                        return [
+                            'id' => $item->id,
+                            'product_name' => $item->product->title ?? 'نامشخص',
+                            'variant_name' => $item->variant->title ?? 'نامشخص',
+                            'quantity' => $item->quantity,
+                            'price' => $item->price,
+                        ];
+                    })
+                ];
+            });
 
         return response()->json([
             'success' => true,

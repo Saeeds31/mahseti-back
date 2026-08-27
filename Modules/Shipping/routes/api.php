@@ -8,6 +8,7 @@ Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::apiResource('shipping-methods', ShippingController::class)->names('shipping');
     Route::get('shippings/avalible-shipping', [ShippingController::class, 'avalibleShippingForUserAddress'])
         ->name('avalibleShippingForUserAddress');
+    Route::post('/calculate-shipping-with-reservation', [ShippingController::class, 'calculateShippingWithReservation']);
 });
 Route::middleware(['auth:sanctum'])->prefix('v1/front')->group(function () {
     Route::post('shippings', [ShippingController::class, "frontShipping"])->name('shippings-front');
