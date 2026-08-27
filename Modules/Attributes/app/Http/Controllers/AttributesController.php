@@ -63,12 +63,7 @@ class AttributesController extends Controller
      */
     public function update(AttributeStoreRequest $request, Attribute $attribute, NotificationService $notifications)
     {
-        if ($attribute->values()->exists()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'این ویژگی دارای مقدار است و قابل ویرایش نمی‌باشد.',
-            ], 422);
-        }
+       
         $data = $request->validated();
         $attribute->update($data);
         $notifications->create(

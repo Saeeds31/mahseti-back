@@ -175,8 +175,9 @@ class OrdersController extends Controller
             'parent_order_id' => 'nullable|exists:orders,id',
             'reservation_type' => 'nullable|in:three_days,seven_days',
         ]);
+        $reservationType = $request->input('reservation_type', 'none');
 
-        return DB::transaction(function () use ($data) {
+        return DB::transaction(function () use ($data, $reservationType) {
             $user = User::with(['wallet'])->findOrFail($data['user_id']);
 
             // ایجاد یا دریافت کیف پول
@@ -247,7 +248,7 @@ class OrdersController extends Controller
                 'payment_status' => $paymentStatus,
                 'status' => $orderStatus,
                 'parent_order_id' => $parentOrder ? $data['parent_order_id'] : null,
-                'reservation_type' => empty($parentOrder) ? ($data['reservation_type'] ?? null) : null,
+                'reservation_type' => $reservationType,
                 'reserved_until' => empty($parentOrder) && !empty($data['reservation_type'])
                     ? now()->addDays($data['reservation_type'] === 'three_days' ? 3 : 7)
                     : null,
@@ -425,6 +426,7 @@ class OrdersController extends Controller
                             ->where('reserved_until', '<=', now());
                     });
             })
+            ->whereNull('parent_order_id')
             ->get();
 
         return response()->json([
