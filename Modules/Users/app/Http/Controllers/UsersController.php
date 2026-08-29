@@ -145,4 +145,11 @@ class UsersController extends Controller
         $user->delete();
         return response()->json(['message' => 'User deleted successfully']);
     }
+    public function getAddresses(User $user)
+    {
+        return response()->json([
+            'success' => true,
+            'data' => $user->addresses
+        ]);
+    }
 }

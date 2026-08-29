@@ -1067,4 +1067,766 @@ class OrdersController extends Controller
             'data' => $reservations
         ]);
     }
+    public function getOrderForEdit(Order $order)
+    {
+        // بررسی اینکه سفارش قابل ویرایش باشد
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $order->load([
+            'items.product',
+            'items.variant.values.attribute',
+            'address.province',
+            'address.city',
+            'shipping',
+            'user',
+            'user.addresses' => function ($query) {
+                $query->with(['province', 'city']);
+            }
+        ]);
+
+        // محاسبه هزینه حمل برای آدرس فعلی
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $order->shipping_id,
+            $order->address->province_id,
+            $order->address->city_id,
+            $order->subtotal
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'order' => $order,
+                'shipping_cost' => $shippingCost,
+                'shippings' => $this->getAvailableShippings($order->address, $order->subtotal, $order->items->sum('quantity')),
+                'addresses' => $order->user->addresses
+            ]
+        ]);
+    }
+    private function getAvailableShippings($address, $subtotal, $quantity)
+    {
+        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $available = [];
+
+        foreach ($shippings as $shipping) {
+            $cost = (new ShippingService)->calculateCost(
+                $shipping->id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal,
+                $quantity
+            );
+
+            if ($cost > 0 || $shipping->conditions->isEmpty()) {
+                $available[] = [
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'cost' => $cost > 0 ? $cost : (int) $shipping->cost,
+                ];
+            }
+        }
+
+        return $available;
+    }
+    /**
+     * ویرایش سفارش
+     */
+    public function updateOrder(Request $request, Order $order)
+    {
+        // بررسی اینکه سفارش قابل ویرایش باشد
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $data = $request->validate([
+            'address_id' => 'required|exists:addresses,id',
+            'shipping_id' => 'required|exists:shippings,id',
+            'items' => 'required|array|min:1',
+            'items.*.id' => 'nullable|exists:order_items,id',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.product_variant_id' => 'required|exists:product_variants,id',
+            'items.*.quantity' => 'required|integer|min:1',
+            'items.*.price' => 'required|numeric|min:0',
+            'discount_amount' => 'nullable|numeric|min:0',
+            'reservation_type' => 'nullable|in:three_days,seven_days',
+        ]);
+
+        return DB::transaction(function () use ($data, $order) {
+            $user = $order->user;
+            $oldAddressId = $order->address_id;
+            $oldShippingId = $order->shipping_id;
+
+            // 1. به‌روزرسانی آدرس و روش حمل
+            $order->address_id = $data['address_id'];
+            $order->shipping_id = $data['shipping_id'];
+
+            // 2. محاسبه مجدد هزینه‌ها
+            $subtotal = 0;
+            $itemsData = [];
+
+            // محاسبه ساب‌توتال از آیتم‌های جدید
+            foreach ($data['items'] as $item) {
+                $subtotal += $item['price'] * $item['quantity'];
+                $itemsData[] = $item;
+            }
+
+            // محاسبه هزینه حمل
+            $address = Address::with(['province', 'city'])
+                ->findOrFail($data['address_id']);
+
+            $shippingCost = (new ShippingService)->calculateCost(
+                $data['shipping_id'],
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+
+            // 3. بررسی موجودی محصولات (برای آیتم‌های جدید یا تغییر یافته)
+            foreach ($data['items'] as $item) {
+                // اگر آیتم جدید است یا تعداد آن تغییر کرده
+                if (!isset($item['id']) || $item['id'] === null) {
+                    $variant = ProductVariant::findOrFail($item['product_variant_id']);
+                    if ($variant->stock < $item['quantity']) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "موجودی {$variant->product->title} کافی نیست"
+                        ], 422);
+                    }
+                } else {
+                    // بررسی تغییرات تعداد
+                    $oldItem = $order->items()->where('id', $item['id'])->first();
+                    if ($oldItem) {
+                        $quantityDiff = $item['quantity'] - $oldItem->quantity;
+                        if ($quantityDiff > 0) {
+                            $variant = ProductVariant::findOrFail($item['product_variant_id']);
+                            if ($variant->stock < $quantityDiff) {
+                                return response()->json([
+                                    'success' => false,
+                                    'message' => "موجودی {$variant->product->title} کافی نیست"
+                                ], 422);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. محاسبه تخفیف
+            $discountAmount = $data['discount_amount'] ?? 0;
+
+            // 5. محاسبه کل نهایی
+            $total = $subtotal - $discountAmount + $shippingCost;
+
+            // 6. بررسی موجودی کیف پول (اگر سفارش قبلاً پرداخت شده)
+            if ($order->payment_status === 'paid') {
+                $walletBalance = $user->wallet?->balance ?? 0;
+                $difference = $total - $order->total;
+
+                if ($difference > 0) {
+                    // اگر مبلغ جدید بیشتر شده، باید مابه‌التفاوت از کیف پول کم شود
+                    if ($walletBalance < $difference) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+
+                    // کم کردن مابه‌التفاوت از کیف پول
+                    $user->wallet()->decrement('balance', $difference);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $difference,
+                        'description' => "ما به التفاوت ویرایش سفارش #{$order->id}",
+                    ]);
+                } elseif ($difference < 0) {
+                    // اگر مبلغ جدید کمتر شده، مابه‌التفاوت به کیف پول برگردانده شود
+                    $user->wallet()->increment('balance', abs($difference));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($difference),
+                        'description' => "بازگشت مابه‌التفاوت ویرایش سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            // 7. به‌روزرسانی فیلدهای سفارش
+            $order->subtotal = $subtotal;
+            $order->discount_amount = $discountAmount;
+            $order->shipping_cost = $shippingCost;
+            $order->total = $total;
+
+            // اگر روش حمل تغییر کرده و سفارش رزرو است
+            if ($oldShippingId != $data['shipping_id'] && $order->status === 'reserved') {
+                $order->shipping_cost = $shippingCost;
+            }
+
+            $order->save();
+
+            // 8. به‌روزرسانی آیتم‌ها
+            $existingItemIds = [];
+            $deletedItemIds = [];
+
+            foreach ($data['items'] as $itemData) {
+                if (isset($itemData['id']) && $itemData['id'] !== null) {
+                    // به‌روزرسانی آیتم موجود
+                    $orderItem = $order->items()->where('id', $itemData['id'])->first();
+                    if ($orderItem) {
+                        // برگرداندن موجودی قبلی
+                        $oldVariant = ProductVariant::find($orderItem->product_variant_id);
+                        if ($oldVariant) {
+                            $oldVariant->increment('stock', $orderItem->quantity);
+                            $this->productStockService->sync($oldVariant->product);
+                        }
+
+                        // به‌روزرسانی آیتم
+                        $orderItem->update([
+                            'product_id' => $itemData['product_id'],
+                            'product_variant_id' => $itemData['product_variant_id'],
+                            'quantity' => $itemData['quantity'],
+                            'price' => $itemData['price'],
+                        ]);
+
+                        // کم کردن موجودی جدید
+                        $newVariant = ProductVariant::find($itemData['product_variant_id']);
+                        if ($newVariant) {
+                            $newVariant->decrement('stock', $itemData['quantity']);
+                            $this->productStockService->sync($newVariant->product);
+                        }
+
+                        $existingItemIds[] = $orderItem->id;
+                    }
+                } else {
+                    // ایجاد آیتم جدید
+                    $newItem = $order->items()->create([
+                        'product_id' => $itemData['product_id'],
+                        'product_variant_id' => $itemData['product_variant_id'],
+                        'quantity' => $itemData['quantity'],
+                        'price' => $itemData['price'],
+                    ]);
+
+                    // کم کردن موجودی
+                    $variant = ProductVariant::find($itemData['product_variant_id']);
+                    if ($variant) {
+                        $variant->decrement('stock', $itemData['quantity']);
+                        $this->productStockService->sync($variant->product);
+                    }
+
+                    $existingItemIds[] = $newItem->id;
+                }
+            }
+
+            // 9. حذف آیتم‌هایی که در درخواست نیستند
+            $itemsToDelete = $order->items()->whereNotIn('id', $existingItemIds)->get();
+            foreach ($itemsToDelete as $itemToDelete) {
+                // برگرداندن موجودی
+                $variant = ProductVariant::find($itemToDelete->product_variant_id);
+                if ($variant) {
+                    $variant->increment('stock', $itemToDelete->quantity);
+                    $this->productStockService->sync($variant->product);
+                }
+                $itemToDelete->delete();
+            }
+
+            // 10. ارسال نوتیفیکیشن
+            $this->notifications->create(
+                "ویرایش سفارش",
+                "سفارش #{$order->id} توسط ادمین ویرایش شد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'سفارش با موفقیت ویرایش شد',
+                'data' => $order->load(['items.product', 'items.variant', 'address', 'shipping'])
+            ]);
+        });
+    }
+
+    /**
+     * محاسبه هزینه حمل برای ویرایش سفارش
+     */
+    public function calculateShippingForEdit(Request $request, Order $order)
+    {
+        $request->validate([
+            'address_id' => 'required|exists:addresses,id',
+            'shipping_id' => 'nullable|exists:shippings,id',
+            'items' => 'required|array',
+            'items.*.price' => 'required|numeric|min:0',
+            'items.*.quantity' => 'required|integer|min:1',
+            'discount_amount' => 'nullable|numeric|min:0',
+        ]);
+
+        // محاسبه ساب‌توتال جدید
+        $subtotal = 0;
+        foreach ($request->items as $item) {
+            $subtotal += $item['price'] * $item['quantity'];
+        }
+
+        $address = Address::with(['province', 'city'])->findOrFail($request->address_id);
+        $discountAmount = $request->discount_amount ?? 0;
+
+        // اگر shipping_id ارسال نشده، از shipping فعلی سفارش استفاده کن
+        $shippingId = $request->shipping_id ?? $order->shipping_id;
+
+        // محاسبه هزینه حمل
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $shippingId,
+            $address->province_id,
+            $address->city_id,
+            $subtotal
+        );
+
+        // دریافت لیست روش‌های حمل موجود
+        $shippings = $this->getAvailableShippings($address, $subtotal, array_sum(array_column($request->items, 'quantity')));
+
+        $total = $subtotal - $discountAmount + $shippingCost;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'subtotal' => $subtotal,
+                'shipping_cost' => $shippingCost,
+                'discount_amount' => $discountAmount,
+                'total' => $total,
+                'shippings' => $shippings,
+                'selected_shipping_id' => $shippingId
+            ]
+        ]);
+    }
+    public function getUserAddresses(Order $order)
+    {
+        $addresses = $order->user->addresses()->with(['province', 'city'])->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $addresses
+        ]);
+    }
+    public function changeOrderAddress(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'address_id' => 'required|exists:addresses,id'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $newAddress = Address::with(['province', 'city'])->findOrFail($request->address_id);
+            $oldAddressId = $order->address_id;
+
+            // به‌روزرسانی آدرس
+            $order->address_id = $request->address_id;
+
+            // محاسبه مجدد هزینه حمل با آدرس جدید
+            $shippingService = new ShippingService();
+            $newShippingCost = $shippingService->calculateCost(
+                $order->shipping_id,
+                $newAddress->province_id,
+                $newAddress->city_id,
+                $order->subtotal
+            );
+
+            // محاسبه تفاوت هزینه حمل
+            $shippingDiff = $newShippingCost - $order->shipping_cost;
+
+            // به‌روزرسانی هزینه حمل
+            $order->shipping_cost = $newShippingCost;
+
+            // به‌روزرسانی کل سفارش
+            $order->total = $order->subtotal - $order->discount_amount + $newShippingCost;
+            $order->save();
+
+            // مدیریت مابه‌التفاوت کیف پول (اگر سفارش پرداخت شده باشد)
+            if ($order->payment_status === 'paid' && $shippingDiff != 0) {
+                $user = $order->user;
+                $walletBalance = $user->wallet?->balance ?? 0;
+
+                if ($shippingDiff > 0) {
+                    // افزایش هزینه - باید از کیف پول کم شود
+                    if ($walletBalance < $shippingDiff) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+                    $user->wallet()->decrement('balance', $shippingDiff);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $shippingDiff,
+                        'description' => "ما به التفاوت تغییر آدرس سفارش #{$order->id}",
+                    ]);
+                } else {
+                    // کاهش هزینه - به کیف پول اضافه شود
+                    $user->wallet()->increment('balance', abs($shippingDiff));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($shippingDiff),
+                        'description' => "بازگشت مابه‌التفاوت تغییر آدرس سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            // ارسال نوتیفیکیشن
+            $this->notifications->create(
+                "تغییر آدرس سفارش",
+                "آدرس سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آدرس سفارش با موفقیت تغییر کرد',
+                'data' => $order->load(['address', 'shipping'])
+            ]);
+        });
+    }
+    public function getAvailableShippingsForOrder(Request $request, Order $order)
+    {
+        $address = $order->address;
+        $subtotal = $order->subtotal;
+        $quantity = $order->items->sum('quantity');
+
+        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $available = [];
+
+        foreach ($shippings as $shipping) {
+            $cost = (new ShippingService)->calculateCost(
+                $shipping->id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal,
+                $quantity
+            );
+
+            if ($cost > 0 || $shipping->conditions->isEmpty()) {
+                $available[] = [
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'cost' => $cost > 0 ? $cost : (int) $shipping->cost,
+                    'is_current' => $shipping->id == $order->shipping_id
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $available
+        ]);
+    }
+    public function changeOrderShipping(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'shipping_id' => 'required|exists:shippings,id'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $newShipping = Shipping::findOrFail($request->shipping_id);
+            $address = $order->address;
+
+            // محاسبه هزینه حمل جدید
+            $shippingService = new ShippingService();
+            $newShippingCost = $shippingService->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $order->subtotal
+            );
+
+            $shippingDiff = $newShippingCost - $order->shipping_cost;
+
+            // به‌روزرسانی روش حمل و هزینه
+            $order->shipping_id = $request->shipping_id;
+            $order->shipping_cost = $newShippingCost;
+            $order->total = $order->subtotal - $order->discount_amount + $newShippingCost;
+            $order->save();
+
+            // مدیریت مابه‌التفاوت کیف پول
+            if ($order->payment_status === 'paid' && $shippingDiff != 0) {
+                $user = $order->user;
+                $walletBalance = $user->wallet?->balance ?? 0;
+
+                if ($shippingDiff > 0) {
+                    if ($walletBalance < $shippingDiff) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+                    $user->wallet()->decrement('balance', $shippingDiff);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $shippingDiff,
+                        'description' => "ما به التفاوت تغییر روش حمل سفارش #{$order->id}",
+                    ]);
+                } else {
+                    $user->wallet()->increment('balance', abs($shippingDiff));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($shippingDiff),
+                        'description' => "بازگشت مابه‌التفاوت تغییر روش حمل سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            $this->notifications->create(
+                "تغییر روش حمل",
+                "روش حمل سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'روش حمل سفارش با موفقیت تغییر کرد',
+                'data' => $order->load(['address', 'shipping'])
+            ]);
+        });
+    }
+    public function changeOrderReservationType(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'reservation_type' => 'nullable|in:none,three_days,seven_days'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $reservationType =  $request->reservation_type;
+
+            // اگر سفارش رزرو شده بود و به عادی تبدیل می‌شود
+            if ($order->status === 'reserved' && $reservationType === "none") {
+                $order->status = 'paid';
+                $order->reserved_until = null;
+                $order->created_at = now();
+            }
+            // اگر سفارش عادی بود و به رزرو تبدیل می‌شود
+            elseif ($order->status !== 'reserved' && $reservationType !== "none") {
+                $order->status = 'reserved';
+                $days = $reservationType === 'three_days' ? 3 : 7;
+                $order->reserved_until = now()->addDays($days);
+            }
+            // اگر نوع رزرو تغییر می‌کند
+            elseif ($order->status === 'reserved' && $reservationType !== "none") {
+                $days = $reservationType === 'three_days' ? 3 : 7;
+                $order->reserved_until = now()->addDays($days);
+            }
+
+            $order->reservation_type = $reservationType;
+            $order->save();
+
+            $this->notifications->create(
+                "تغییر نوع سفارش",
+                "نوع سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'نوع سفارش با موفقیت تغییر کرد',
+                'data' => $order
+            ]);
+        });
+    }
+    public function addOrderItem(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'product_variant_id' => 'required|exists:product_variants,id',
+            'quantity' => 'required|integer|min:1',
+            'price' => 'required|numeric|min:0'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            // بررسی موجودی
+            $variant = ProductVariant::findOrFail($request->product_variant_id);
+            if ($variant->stock < $request->quantity) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "موجودی {$variant->product->title} کافی نیست"
+                ], 422);
+            }
+
+            // ایجاد آیتم جدید
+            $item = $order->items()->create([
+                'product_id' => $request->product_id,
+                'product_variant_id' => $request->product_variant_id,
+                'quantity' => $request->quantity,
+                'price' => $request->price
+            ]);
+
+            // کم کردن موجودی
+            $variant->decrement('stock', $request->quantity);
+            $this->productStockService->sync($variant->product);
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت اضافه شد',
+                'data' => $item
+            ]);
+        });
+    }
+    public function removeOrderItem(Request $request, Order $order, $itemId)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        return DB::transaction(function () use ($order, $itemId) {
+            $item = $order->items()->findOrFail($itemId);
+
+            // برگرداندن موجودی
+            $variant = ProductVariant::find($item->product_variant_id);
+            if ($variant) {
+                $variant->increment('stock', $item->quantity);
+                $this->productStockService->sync($variant->product);
+            }
+
+            $item->delete();
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت حذف شد'
+            ]);
+        });
+    }
+
+    /**
+     * به‌روزرسانی آیتم سفارش
+     */
+    public function updateOrderItem(Request $request, Order $order, $itemId)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'quantity' => 'required|integer|min:1',
+            'price' => 'required|numeric|min:0'
+        ]);
+
+        return DB::transaction(function () use ($request, $order, $itemId) {
+            $item = $order->items()->findOrFail($itemId);
+
+            // بررسی تغییر تعداد
+            $quantityDiff = $request->quantity - $item->quantity;
+            if ($quantityDiff > 0) {
+                $variant = ProductVariant::find($item->product_variant_id);
+                if ($variant && $variant->stock < $quantityDiff) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "موجودی {$variant->product->title} کافی نیست"
+                    ], 422);
+                }
+                if ($variant) {
+                    $variant->decrement('stock', $quantityDiff);
+                    $this->productStockService->sync($variant->product);
+                }
+            } elseif ($quantityDiff < 0) {
+                $variant = ProductVariant::find($item->product_variant_id);
+                if ($variant) {
+                    $variant->increment('stock', abs($quantityDiff));
+                    $this->productStockService->sync($variant->product);
+                }
+            }
+
+            // به‌روزرسانی آیتم
+            $item->update([
+                'quantity' => $request->quantity,
+                'price' => $request->price
+            ]);
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت به‌روزرسانی شد',
+                'data' => $item
+            ]);
+        });
+    }
+
+    /**
+     * محاسبه مجدد کل سفارش
+     */
+    private function recalculateOrderTotal($order)
+    {
+        $subtotal = $order->items->sum(function ($item) {
+            return $item->price * $item->quantity;
+        });
+
+        $address = $order->address;
+        $quantity = $order->items->sum('quantity');
+
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $order->shipping_id,
+            $address->province_id,
+            $address->city_id,
+            $subtotal,
+            $quantity
+        );
+
+        $order->subtotal = $subtotal;
+        $order->shipping_cost = $shippingCost;
+        $order->total = $subtotal - $order->discount_amount + $shippingCost;
+        $order->save();
+
+        return $order;
+    }
 }

@@ -10,6 +10,20 @@ Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::get('/orders-todays-orders', [OrdersController::class, "todaysOrders"])->name("todaysOrders");
     Route::post('/orders/print-data', [OrdersController::class, 'getPrintData']);
     Route::get('/user-reservations', [OrdersController::class, 'getUserReservations']);
+    Route::get('/orders/{order}/edit', [OrdersController::class, 'getOrderForEdit']);
+
+    Route::put('/orders/{order}/update', [OrdersController::class, 'updateOrder']);
+
+    Route::post('/orders/{order}/calculate-shipping', [OrdersController::class, 'calculateShippingForEdit']);
+    // 
+    Route::get('/orders/{order}/addresses', [OrdersController::class, 'getUserAddresses']);
+    Route::put('/orders/{order}/change-address', [OrdersController::class, 'changeOrderAddress']);
+    Route::get('/orders/{order}/available-shippings', [OrdersController::class, 'getAvailableShippingsForOrder']);
+    Route::put('/orders/{order}/change-shipping', [OrdersController::class, 'changeOrderShipping']);
+    Route::put('/orders/{order}/change-reservation-type', [OrdersController::class, 'changeOrderReservationType']);
+    Route::post('/orders/{order}/items', [OrdersController::class, 'addOrderItem']);
+    Route::put('/orders/{order}/items/{itemId}', [OrdersController::class, 'updateOrderItem']);
+    Route::delete('/orders/{order}/items/{itemId}', [OrdersController::class, 'removeOrderItem']);
 });
 Route::middleware(['auth:sanctum'])->prefix('v1/front')->group(function () {
     Route::post('/order', [OrdersController::class, "checkout"])->name("checkout");
