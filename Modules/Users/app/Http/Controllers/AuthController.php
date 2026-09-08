@@ -102,7 +102,7 @@ class AuthController extends Controller
             ->first();
 
         if (!$otp) {
-            return response()->json(['message' => 'Invalid or expired OTP'], 422);
+            return response()->json(['message' => 'کد یکبار مصرف منقضی شده است'], 422);
         }
 
         $user = User::where('mobile', $mobile)->first();

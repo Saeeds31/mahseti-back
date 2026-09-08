@@ -86,7 +86,8 @@ class ShippingController extends Controller
     {
         $data = $request->validated();
         $shippingMethod->update($data);
-        $sentConditionIds = collect($data['conditions'])
+        $conditions = $data['conditions'] ?? [];
+        $sentConditionIds =  collect($conditions)
             ->pluck('id')
             ->filter()
             ->toArray();

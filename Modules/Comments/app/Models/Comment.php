@@ -54,4 +54,5 @@ class Comment extends Model
             'this_month'       => self::whereMonth('created_at', now()->month)->count(),
         ];
     }
+   
 }

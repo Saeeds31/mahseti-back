@@ -26,7 +26,7 @@ class CommentsController extends Controller
             ->whereNull('parent_id')
             ->where('status', 1) // فقط تایید شده‌ها
             ->with(['user', 'replies.user'])
-            ->latest();
+            ->latest()->get();
         return response()->json($comments);
     }
     // ثبت کامنت جدید
@@ -54,6 +54,10 @@ class CommentsController extends Controller
             'message' => 'کامنت شما ثبت شد و پس از تایید نمایش داده خواهد شد.',
             'comment' => $comment
         ]);
+    }
+       public function stats()
+    {
+        return response()->json(Comment::dashboardReport());
     }
     public function storeProducts(Request $request, $id)
     {

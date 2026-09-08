@@ -631,6 +631,7 @@ class OrdersController extends Controller
                 'address_id' => $address->id,
                 'shipping_id' => $shippingMethod->id,
                 'subtotal' => $subtotal,
+                'coupon_id' => null,
                 'discount_amount' => $discountAmount,
                 'shipping_cost' => $shippingCost,
                 'total' => $total,

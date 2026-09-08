@@ -129,17 +129,29 @@ class Product extends Model
             }]);
         }
 
-        return $this->specifications->map(function ($spec) {
-            $selectedValueId = $spec->pivot->specification_value_id;
-            $selectedValue = $spec->values->firstWhere('id', $selectedValueId);
+        // گروه‌بندی بر اساس specification_id
+        $groupedSpecs = $this->specifications->groupBy('id');
+
+        return $groupedSpecs->map(function ($specs, $specId) {
+            $firstSpec = $specs->first();
+            $values = $specs->map(function ($spec) {
+                $selectedValueId = $spec->pivot->specification_value_id;
+                $selectedValue = $spec->values->firstWhere('id', $selectedValueId);
+
+                return [
+                    'id' => $selectedValueId,
+                    'value' => $selectedValue ? $selectedValue->value : null,
+                    'specification_value_id' => $selectedValueId, // اضافه کردن این برای دسترسی بهتر
+                ];
+            })->values(); // بازنشانی ایندکس‌ها
 
             return [
-                'id' => $spec->id,
-                'title' => $spec->title,
-                'selected_value_id' => $selectedValueId,
-                'selected_value' => $selectedValue ? $selectedValue->value : null,
+                'specification_id' => $specId,
+                'title' => $firstSpec->title,
+                'values' => $values, // آرایه‌ای از تمام مقادیر
+                'selected_value_ids' => $values->pluck('id')->toArray(), // آیدی‌های انتخاب‌شده
             ];
-        });
+        })->values(); // بازنشانی ایندکس‌های اصلی
     }
 
     public function getFinalPriceAttribute()
