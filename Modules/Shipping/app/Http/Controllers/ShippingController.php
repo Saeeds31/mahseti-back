@@ -369,6 +369,10 @@ class ShippingController extends Controller
                 }
 
                 if ($allConditionsMet) {
+                    if ($address->city_id == 864 && in_array($shipping->id, [7, 8, 11])) {
+                        continue; // از اضافه شدن به لیست جلوگیری کن
+                    }
+
                     $cost = (int) $shipping->cost;
                     $available[] = $this->shippingService->formatShippingMethodWithDifference($shipping, $cost, $reservationShippingCost);
                 }
@@ -467,6 +471,11 @@ class ShippingController extends Controller
             }
 
             if ($allConditionsMet) {
+                // اگر شهر گرگان است و روش ارسال جزو سه روش ممنوعه است، ادامه بده (از اضافه شدن جلوگیری کن)
+                if ($address->city_id == 864 && in_array($shipping->id, [7, 8, 11])) {
+                    continue; // از اضافه شدن به لیست جلوگیری کن و برو به آیتم بعدی
+                }
+
                 $cost = (int) $shipping->cost;
                 $available[] = [
                     'id' => $shipping->id,

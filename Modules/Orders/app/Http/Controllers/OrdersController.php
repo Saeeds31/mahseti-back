@@ -448,10 +448,11 @@ class OrdersController extends Controller
             'payment_method'    => 'required|in:wallet,online',
             'gateway'           => 'required_if:payment_method,online|string',
             'coupon_code'       => 'nullable|string',
+            'user_note'       => 'nullable|string',
             'reservation_type'  => 'nullable|in:none,three_days,seven_days',
             'parent_order_id'   => 'nullable|exists:orders,id',
         ]);
-
+        $user_note = $request->user_note;
         // 2. بارگذاری آدرس انتخابی کاربر
         $address = Address::with(['city', 'province'])
             ->where('user_id', $user->id)
@@ -565,6 +566,7 @@ class OrdersController extends Controller
             $coupon,
             $shippingMethod,
             $address,
+            $user_note,
             $reservationType,
             $reservedUntil
         ) {
@@ -635,6 +637,7 @@ class OrdersController extends Controller
                 'discount_amount' => $discountAmount,
                 'shipping_cost' => $shippingCost,
                 'total' => $total,
+                'user_note' => $user_note,
                 'wallet_payment' => $fromWallet,
                 'online_payment' => $toPayOnline,
                 'payment_method' => $request->payment_method,
