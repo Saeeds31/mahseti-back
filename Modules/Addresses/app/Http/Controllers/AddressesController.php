@@ -110,7 +110,7 @@ class AddressesController extends Controller
             'receiver_name' => ['required', 'string', 'max:255'],
             'province_id'   => ['required', 'exists:provinces,id'],
             'city_id'       => ['required', 'exists:cities,id'],
-            'postal_code'   => ['required', 'string', 'max:20'],
+            'postal_code'   => ['nullable', 'string', 'max:20'],
             'address_line'  => ['required', 'string'],
             'phone'         => ['required', 'digits:11'],
         ]);
@@ -148,7 +148,7 @@ class AddressesController extends Controller
             'receiver_name' => ['required', 'string', 'max:255'],
             'province_id'   => ['required', 'exists:provinces,id'],
             'city_id'       => ['required', 'exists:cities,id'],
-            'postal_code'   => ['required', 'string', 'max:20'],
+            'postal_code'   => ['nullable', 'string', 'max:20'],
             'address_line'  => ['required', 'string'],
             'phone'         => ['required', 'digits:11'],
         ]);

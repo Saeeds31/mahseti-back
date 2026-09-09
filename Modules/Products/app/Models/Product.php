@@ -550,7 +550,7 @@ class Product extends Model
             ->limit($limit)
             ->get();
     }
-    public static function latestProducts($limit = 8)
+    public static function latestProducts($limit =12)
     {
         return self::where('status', "published") // فقط فعال‌ها
             ->whereIn('sales_channel', ['online_only', 'both'])

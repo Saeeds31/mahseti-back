@@ -2,8 +2,6 @@
 
 namespace Modules\Payment\Drivers;
 
-use Illuminate\Support\Facades\Http;
-use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Payment\Contracts\GatewayInterface;
@@ -13,278 +11,187 @@ use Modules\Wallet\Models\Wallet;
 
 class ParsianDriver implements GatewayInterface
 {
-    protected string $merchant;
-
-    protected string $terminal;
-
-    protected string $loginAccount;
-
-    protected bool $sandbox;
-
+    protected string $pin; // مرچنت کد (همون LoginAccount)
     protected string $requestUrl;
-
     protected string $verifyUrl;
-
-    protected const STATUS_MESSAGES = [
-        0 => 'تراکنش با موفقیت انجام شد',
-        -1 => 'خطا در ارتباط با سرور بانک',
-        -2 => 'پارامترهای ورودی نامعتبر',
-        -3 => 'پارامترهای ورودی نامعتبر (Token)',
-        -4 => 'شماره ترمینال نامعتبر',
-        -5 => 'شماره مرچنت نامعتبر',
-        -6 => 'رمز پویا نامعتبر',
-        -7 => 'مبلغ تراکنش نامعتبر',
-        -8 => 'کد درخواست نامعتبر',
-        -9 => 'تراکنش تکراری',
-        -10 => 'تراکنش ناموفق',
-        -11 => 'تراکنش نامعتبر',
-        -12 => 'درخواست نامعتبر',
-        -13 => 'تراکنش قبلا تایید شده',
-        -14 => 'خطای سیستمی',
-        -15 => 'تراکنش توسط کاربر لغو شده',
-        -16 => 'زمان تراکنش منقضی شده',
-        -17 => 'تعداد تراکنش بیش از حد مجاز',
-        -18 => 'خطا در اعتبارسنجی',
-        -19 => 'خطا در پردازش',
-    ];
 
     public function __construct(
         protected MoneyService $money
     ) {
-        $this->merchant = config('payment.drivers.parsian.merchant');
-        $this->terminal = config('payment.drivers.parsian.terminal');
-        $this->loginAccount = config('payment.drivers.parsian.login_account');
-        $this->sandbox = config('payment.drivers.parsian.sandbox');
-
-        // تعریف آدرس‌های API بر اساس حالت sandbox یا production
-        if ($this->sandbox) {
-            $this->requestUrl = "https://pec.shaparak.ir/NewIPGServices/Sale/SaleService.asmx?wsdl";
-            $this->verifyUrl = "https://pec.shaparak.ir/NewIPGServices/Confirm/ConfirmService.asmx?wsdl";
-        } else {
-            $this->requestUrl = "https://pec.shaparak.ir/NewIPGServices/Sale/SaleService.asmx?wsdl";
-            $this->verifyUrl = "https://pec.shaparak.ir/NewIPGServices/Confirm/ConfirmService.asmx?wsdl";
-        }
+        $this->pin = config('payment.drivers.parsian.merchant'); // ip7bi6jK6SWC7lKS2GY1
+        $this->requestUrl = "https://pec.shaparak.ir/NewIPGServices/Sale/SaleService.asmx?WSDL";
+        $this->verifyUrl = "https://pec.shaparak.ir/NewIPGServices/Confirm/ConfirmService.asmx?WSDL";
     }
 
-    public function pay(
-        GatewayTransaction $transaction
-    ): string {
-        // تعیین Callback URL بر اساس نوع Payable
-        $callbackRoute = 'payment.callback'; // پیش‌فرض برای سفارش
+    public function pay(GatewayTransaction $transaction): string
+    {
+        $callbackRoute = $transaction->payable_type === 'wallet' || $transaction->payable_type === Wallet::class
+            ? 'payment.wallet-callback'
+            : 'payment.callback';
 
-        // اگر payable کیف پول باشد
-        if ($transaction->payable_type === 'wallet' || $transaction->payable_type === Wallet::class) {
-            $callbackRoute = 'payment.wallet-callback';
-        }
-
-        // برای پارسیان، مبلغ باید به ریال باشد
         $amountInRial = $this->money->tomanToRial($transaction->amount);
-
-        // تولید شناسه یکتا برای تراکنش
         $orderId = time() . '_' . $transaction->id;
 
-        // پارامترهای درخواست به صورت XML (چون پارسیان SOAP است)
-        $requestParams = [
-            'LoginAccount' => $this->loginAccount,
-            'Amount' => $amountInRial,
-            'OrderId' => $orderId,
-            'CallBackUrl' => route($callbackRoute, $transaction->gateway),
-            'AdditionalData' => json_encode([
-                'transaction_id' => $transaction->id,
-            ]),
-        ];
+        try {
+            // غیرفعال کردن کش WSDL
+            ini_set("soap.wsdl_cache_enabled", "0");
 
-        // برای درخواست به پارسیان از SOAP استفاده می‌کنیم
-        $response = $this->sendSoapRequest($this->requestUrl, 'SaleService', 'SalePaymentRequest', $requestParams);
+            $client = new \SoapClient($this->requestUrl, [
+                'encoding' => 'UTF-8',
+                'soap_version' => SOAP_1_1,
+                'trace' => true,
+                'exceptions' => true,
+                'connection_timeout' => 30,
+            ]);
 
-        Log::channel('payment')->info('Parsian Pay Response', [
-            'transaction_id' => $transaction->id,
-            'response' => $response,
-        ]);
+            // ساخت پارامترها دقیقاً مثل کد پارسیان
+            $params = [
+                'LoginAccount' => $this->pin,
+                'Amount' => (int) $amountInRial,
+                'OrderId' => (string) $orderId,
+                'CallBackUrl' => route($callbackRoute, $transaction->gateway),
+                'AdditionalData' => (string) json_encode(['tid' => $transaction->id]),
+                'Originator' => '', // می‌تواند خالی باشد
+            ];
 
-        // بررسی پاسخ پارسیان
-        if (isset($response['status']) && $response['status'] != 0) {
-            $errorMessage = $this->getStatusMessage($response['status']) ?? 
-                'خطا در اتصال به درگاه پارسیان.';
+            Log::channel('payment')->info('Parsian Request Params', $params);
 
-            throw new \RuntimeException($errorMessage);
+            // ارسال درخواست با ساختار requestData (مطابق کد پارسیان)
+            $result = $client->SalePaymentRequest([
+                'requestData' => $params
+            ]);
+
+            Log::channel('payment')->info('Parsian Raw Response', [
+                'result' => $result,
+            ]);
+
+            // بررسی پاسخ به صورت شیء (مطابق کد پارسیان)
+            $response = $result->SalePaymentRequestResult;
+            
+            if ($response->Status != 0) {
+                $errorMessage = $this->getStatusMessage($response->Status) ?? 
+                    'خطای ارتباط با بانک: ' . ($response->Message ?? 'کد ' . $response->Status);
+                
+                Log::error('Parsian Pay Error', [
+                    'status' => $response->Status,
+                    'message' => $response->Message ?? null,
+                ]);
+                
+                throw new \RuntimeException($errorMessage);
+            }
+
+            $token = $response->Token;
+            if (!$token) {
+                throw new \RuntimeException('توکن پرداخت دریافت نشد.');
+            }
+
+            // ذخیره اطلاعات در تراکنش
+            $transaction->update([
+                'authority' => $token,
+                'order_id' => $orderId,
+                'request_data' => [
+                    'status' => $response->Status,
+                    'token' => $token,
+                    'message' => $response->Message ?? '',
+                ],
+            ]);
+
+            // آدرس پرداخت (مطابق کد پارسیان)
+            return "https://pec.shaparak.ir/NewIPG/?Token=" . $token;
+
+        } catch (\SoapFault $e) {
+            Log::error('Parsian SOAP Fault: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw new \RuntimeException('خطا در ارتباط با سرور بانک: ' . $e->getMessage());
+        } catch (\Exception $e) {
+            Log::error('Parsian Error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw new \RuntimeException('خطا در ارتباط با سرور بانک: ' . $e->getMessage());
         }
-
-        // ذخیره توکن (Token)
-        $token = $response['Token'] ?? null;
-        
-        if (!$token) {
-            throw new \RuntimeException('توکن پرداخت دریافت نشد.');
-        }
-
-        $transaction->update([
-            'authority' => $token,
-            'request_data' => $response,
-            'order_id' => $orderId,
-        ]);
-
-        // بازگشت آدرس پرداخت پارسیان
-        if ($this->sandbox) {
-            return "https://pec.shaparak.ir/NewIPGServices/pec/SalePayment?Token={$token}";
-        }
-
-        return "https://pec.shaparak.ir/NewIPGServices/pec/SalePayment?Token={$token}";
     }
 
-    public function verify(
-        GatewayTransaction $transaction,
-        array $callback
-    ): array {
-        // دریافت token از callback (در پارسیان از طریق پارامتر Token ارسال می‌شود)
+    public function verify(GatewayTransaction $transaction, array $callback): array
+    {
         $token = $callback['Token'] ?? $callback['token'] ?? $transaction->authority;
 
-        // مبلغ تراکنش به ریال
-        $amountInRial = $this->money->tomanToRial($transaction->amount);
-
-        // پارامترهای تایید به صورت XML
-        $verifyParams = [
-            'LoginAccount' => $this->loginAccount,
-            'Token' => $token,
-        ];
-
-        // درخواست تایید به پارسیان
-        $response = $this->sendSoapRequest($this->verifyUrl, 'ConfirmService', 'ConfirmPayment', $verifyParams);
-
-        Log::channel('payment')->info('Parsian Verify Response', [
-            'transaction_id' => $transaction->id,
-            'token' => $token,
-            'response' => $response,
-        ]);
-
-        $transaction->update([
-            'verify_data' => $response,
-        ]);
-
-        // بررسی وضعیت پرداخت
-        $statusCode = $response['status'] ?? -1;
-
-        // اگر وضعیت ناموفق بود
-        if ($statusCode != 0) {
-            $errorMessage = $this->getStatusMessage($statusCode) ?? 
-                'خطای نامشخص در پرداخت پارسیان.';
-
-            throw new PaymentFailedException(
-                $errorMessage,
-                $response,
-                $statusCode
-            );
-        }
-
-        // پرداخت موفق
-        $refId = $response['RRN'] ?? $response['rrn'] ?? null;
-
-        return [
-            'success' => true,
-            'ref_id' => $refId,
-            'response' => $response,
-        ];
-    }
-
-    /**
-     * ارسال درخواست SOAP به پارسیان
-     */
-    protected function sendSoapRequest(string $url, string $service, string $method, array $params): array
-    {
         try {
-            // ساخت XML بدنه درخواست
-            $xmlBody = $this->buildSoapRequest($service, $method, $params);
+            ini_set("soap.wsdl_cache_enabled", "0");
 
-            $response = Http::withHeaders([
-                'Content-Type' => 'text/xml; charset=utf-8',
-                'SOAPAction' => "http://tempuri.org/I{$service}/{$method}",
-            ])
-            ->timeout(30)
-            ->send('POST', $url, [
-                'body' => $xmlBody,
+            $client = new \SoapClient($this->verifyUrl, [
+                'encoding' => 'UTF-8',
+                'soap_version' => SOAP_1_1,
+                'trace' => true,
+                'exceptions' => true,
+                'connection_timeout' => 30,
             ]);
 
-            // پردازش پاسخ SOAP
-            return $this->parseSoapResponse($response->body());
-            
-        } catch (\Exception $e) {
-            Log::channel('payment')->error('Parsian SOAP Error', [
-                'url' => $url,
-                'method' => $method,
-                'error' => $e->getMessage(),
+            $params = [
+                'LoginAccount' => $this->pin,
+                'Token' => $token,
+            ];
+
+            // ارسال درخواست تایید (مطابق کد پارسیان)
+            $result = $client->ConfirmPayment([
+                'requestData' => $params
             ]);
-            
-            return ['status' => -1, 'message' => $e->getMessage()];
-        }
-    }
 
-    /**
-     * ساخت درخواست SOAP
-     */
-    protected function buildSoapRequest(string $service, string $method, array $params): string
-    {
-        $xml = new \SimpleXMLElement('<soap:Envelope/>');
-        $xml->addAttribute('xmlns:soap', 'http://schemas.xmlsoap.org/soap/envelope/');
-        $xml->addAttribute('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance');
-        $xml->addAttribute('xmlns:xsd', 'http://www.w3.org/2001/XMLSchema');
+            Log::channel('payment')->info('Parsian Verify Response', [
+                'result' => $result,
+            ]);
 
-        $body = $xml->addChild('soap:Body');
-        $request = $body->addChild("{$method}Request");
-        $request->addAttribute('xmlns', 'http://tempuri.org/');
+            $response = $result->ConfirmPaymentResult;
 
-        foreach ($params as $key => $value) {
-            $request->addChild($key, $value);
-        }
+            $transaction->update([
+                'verify_data' => [
+                    'status' => $response->Status,
+                    'rrn' => $response->RRN ?? null,
+                    'message' => $response->Message ?? '',
+                ],
+            ]);
 
-        return $xml->asXML();
-    }
-
-    /**
-     * پردازش پاسخ SOAP
-     */
-    protected function parseSoapResponse(string $response): array
-    {
-        try {
-            $xml = simplexml_load_string($response);
-            
-            if ($xml === false) {
-                return ['status' => -1, 'message' => 'پاسخ نامعتبر از بانک'];
+            if ($response->Status != 0) {
+                throw new PaymentFailedException(
+                    $this->getStatusMessage($response->Status) ?? 'خطا در تایید پرداخت',
+                    (array) $response,
+                    $response->Status
+                );
             }
 
-            // استخراج داده‌های پاسخ
-            $result = [];
-            
-            // پیدا کردن گره‌های پاسخ
-            $namespaces = $xml->getNamespaces(true);
-            $soapBody = $xml->children($namespaces['soap'])->Body;
-            
-            if ($soapBody) {
-                $responseNode = $soapBody->children('http://tempuri.org/');
-                
-                if ($responseNode && $responseNode->count() > 0) {
-                    $methodResponse = $responseNode->children();
-                    
-                    foreach ($methodResponse as $key => $value) {
-                        $result[$key] = (string) $value;
-                    }
-                }
-            }
+            return [
+                'success' => true,
+                'ref_id' => $response->RRN ?? null,
+                'response' => (array) $response,
+            ];
 
-            return $result;
-            
-        } catch (\Exception $e) {
-            Log::channel('payment')->error('Parsian Parse Response Error', [
-                'error' => $e->getMessage(),
-            ]);
-            
-            return ['status' => -1, 'message' => 'خطا در پردازش پاسخ بانک'];
+        } catch (\SoapFault $e) {
+            Log::error('Parsian Verify SOAP Fault: ' . $e->getMessage());
+            throw new PaymentFailedException('خطا در تایید پرداخت: ' . $e->getMessage(), [], -1);
         }
     }
 
-    /**
-     * دریافت پیام خطا بر اساس کد وضعیت
-     */
     protected function getStatusMessage(int $code): ?string
     {
-        return self::STATUS_MESSAGES[$code] ?? null;
+        $messages = [
+            0 => 'تراکنش با موفقیت انجام شد',
+            -1 => 'خطا در ارتباط با سرور بانک',
+            -2 => 'پارامترهای ورودی نامعتبر',
+            -3 => 'پارامتر Token نامعتبر',
+            -4 => 'شماره ترمینال نامعتبر',
+            -5 => 'شماره مرچنت نامعتبر',
+            -6 => 'مبلغ تراکنش نامعتبر',
+            -7 => 'کد درخواست نامعتبر',
+            -8 => 'تراکنش تکراری',
+            -9 => 'تراکنش ناموفق',
+            -10 => 'تراکنش نامعتبر',
+            -11 => 'درخواست نامعتبر',
+            -12 => 'تراکنش قبلا تایید شده',
+            -13 => 'خطای سیستمی',
+            -14 => 'تراکنش توسط کاربر لغو شده',
+            -15 => 'زمان تراکنش منقضی شده',
+            -16 => 'تعداد تراکنش بیش از حد مجاز',
+        ];
+        return $messages[$code] ?? null;
     }
 }

@@ -17,7 +17,7 @@ return new class extends Migration
             $table->string('receiver_name');
             $table->foreignId('province_id')->constrained('provinces');
             $table->foreignId('city_id')->constrained('cities');
-            $table->string('postal_code');
+            $table->string('postal_code')->nullable();
             $table->text('address_line');
             $table->string('phone');
             $table->timestamps();

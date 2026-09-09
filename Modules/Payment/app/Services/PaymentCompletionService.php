@@ -103,7 +103,7 @@ class PaymentCompletionService
         );
 
         $this->smsService->sendToKavenegar(
-            'customer-order',
+            'createorderuser',
             $user->mobile,
             $order->id,
             [
@@ -113,10 +113,10 @@ class PaymentCompletionService
             ]
         );
 
-        $this->smsService->sendToAdmins(
-            'customer-order-admin',
-            $order->id
-        );
+        // $this->smsService->sendToAdmins(
+        //     'customer-order-admin',
+        //     $order->id
+        // );
     }
 
     private function completeWallet(

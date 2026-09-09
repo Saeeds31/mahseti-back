@@ -24,16 +24,35 @@ class ProductsController extends Controller
     public function index(Request $request)
     {
         $query = Product::with(['categories', 'images', 'variants.values']);
+
+        // جستجو
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('title', 'like', "%{$search}%");
             });
         }
+
+        // فیلتر وضعیت
         if ($status = $request->get('status')) {
-            $query->where(function ($q) use ($status) {
-                $q->where('status', $status);
+            if ($status === 'draft') {
+                // فقط پیش‌نویس‌هایی که published_at دارند
+                $query->where('status', 'draft')
+                    ->whereNotNull('published_at');
+            } else {
+                // وضعیت منتشر شده یا هر وضعیت دیگر
+                $query->where('status', $status);
+            }
+        } else {
+            // بدون فیلتر: همه به جز پیش‌نویس‌های بدون published_at
+            $query->where(function ($q) {
+                $q->where('status', '!=', 'draft')
+                    ->orWhere(function ($q2) {
+                        $q2->where('status', 'draft')
+                            ->whereNotNull('published_at');
+                    });
             });
         }
+
         $products = $query->latest()->paginate(15);
         return response()->json($products);
     }
@@ -523,6 +542,7 @@ class ProductsController extends Controller
                     'id' => $product->id,
                     'title' => $product->title,
                     'video' => $product->video,
+                    'images' => $product->images,
                     'status' => $product->status,
                     'description' => $product->description,
                     'price' => $product->price,
