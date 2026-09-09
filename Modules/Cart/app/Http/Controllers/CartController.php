@@ -4,6 +4,7 @@ namespace Modules\Cart\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Modules\Cart\Models\Cart;
 use Modules\Products\Models\Product;
 use Modules\Products\Models\ProductVariant;
@@ -178,66 +179,84 @@ class CartController extends Controller
             'quantity' => 'nullable|integer|min:1'
         ]);
 
-        $user = $request->user();
         $variant = ProductVariant::with('product')->findOrFail($request->variant_id);
         $quantity = $request->quantity ?? 1;
 
+        // بررسی موجودی
         if ($variant->stock < $quantity) {
             return response()->json([
                 'success' => false,
                 'message' => 'موجودی محصول ناکافی است'
             ], 422);
         }
+        $user = Auth::guard('sanctum')->user();        // اگر کاربر لاگین کرده باشد
+        if ($user) {
 
-        // base price from variant
-        $basePrice = (int) $variant->price;
-        $product = $variant->product;
+            // قیمت‌ها
+            $basePrice = (int) $variant->price;
+            $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
 
-        // final unit price after product discount
-        $finalUnitPrice = $this->calculateFinalUnitPrice($variant);
+            $item = Cart::where('user_id', $user->id)
+                ->where('variant_id', $variant->id)
+                ->first();
 
-        $item = Cart::where('user_id', $user->id)
-            ->where('variant_id', $variant->id)
-            ->first();
+            if ($item) {
+                // بروزرسانی آیتم موجود
+                $newQuantity = $item->quantity + $quantity;
+                if ($newQuantity > $variant->stock) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'موجودی محصول کافی نیست'
+                    ], 422);
+                }
 
-        if ($item) {
-            // update quantity and also sync prices to current
-            $newQuantity = $item->quantity + $quantity;
-            if ($newQuantity > $variant->stock) {
+                $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
+
+                $item->quantity = $newQuantity;
+                $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
+                $item->price_original = $basePrice;
+                $item->price_final = $finalUnitPrice;
+                $item->save();
+
                 return response()->json([
-                    'success' => false,
-                    'message' => 'موجودی محصول کافی نیست'
-                ], 422);
+                    'success' => true,
+                    'message' => 'موجودی سبد بروزرسانی شد',
+                    'item' => $item,
+                    'is_guest' => false
+                ]);
             }
 
-            $price_changed = ((int)$item->price_original !== $basePrice) || ((int)$item->price_final !== $finalUnitPrice);
-
-            $item->quantity = $newQuantity;
-            $item->alert_message = $price_changed ? "تغییراتی در قیمت محصول به نسبت قبل داده شده است" : null;
-            $item->price_original = $basePrice;
-            $item->price_final = $finalUnitPrice;
-            $item->save();
+            // ایجاد آیتم جدید در سبد خرید کاربر
+            $item = Cart::create([
+                'user_id'        => $user->id,
+                'variant_id'     => $variant->id,
+                'quantity'       => $quantity,
+                'price_original' => $basePrice,
+                'price_final'    => $finalUnitPrice,
+            ]);
 
             return response()->json([
                 'success' => true,
-                'message' => 'موجودی سبد بروزرسانی شد',
-                'item' => $item
+                'message' => 'محصول به سبد خرید اضافه شد',
+                'item' => $item,
+                'is_guest' => false
             ]);
         }
 
-        // create new cart item
-        $item = Cart::create([
-            'user_id'        => $user->id,
-            'variant_id'     => $variant->id,
-            'quantity'       => $quantity,
-            'price_original' => $basePrice,
-            'price_final'    => $finalUnitPrice,
-        ]);
-
+        // اگر کاربر لاگین نکرده باشد
         return response()->json([
             'success' => true,
-            'message' => 'محصول به سبد خرید اضافه شد',
-            'item' => $item
+            'message' => 'محصول موجود است',
+            'variant' => [
+                'id' => $variant->id,
+                'name' => $variant->product->name ?? 'محصول',
+                'stock' => $variant->stock,
+                'price' => (int) $variant->price,
+                'final_price' => $this->calculateFinalUnitPrice($variant)
+            ],
+            'quantity' => $quantity,
+            'is_guest' => true,
+            'requires_login' => true
         ]);
     }
 

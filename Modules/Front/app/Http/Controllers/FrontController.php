@@ -108,7 +108,7 @@ class FrontController extends Controller
                 ->where('status', 'published') // فقط محصولات منتشر شده
                 ->whereIn('sales_channel', ['online_only', 'both']) // فقط محصولات قابل فروش آنلاین
                 ->orderBy('created_at', 'desc')
-                ->limit(10)
+                ->limit(12)
                 ->get();
 
             $selectedCategoryList[] = [
