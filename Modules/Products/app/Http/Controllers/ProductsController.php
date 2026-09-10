@@ -307,7 +307,9 @@ class ProductsController extends Controller
 
     public function frontIndex(Request $request)
     {
-        $query = Product::with(['categories', 'variants.values.attribute'])->where('status', '!=', "draft")->latest();
+        $query = Product::with(['categories', 'variants.values.attribute'])
+            ->where('status', '!=', "draft")
+            ->where('price', '>', 0);
 
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
@@ -322,34 +324,14 @@ class ProductsController extends Controller
                 $q->whereIn('categories.id', $categoryIds);
             });
         }
-        if ($request->filled('attribute_values')) {
-            $query->when($request->filled('attribute_values'), function ($q) use ($request) {
-                $valueIds = explode(',', $request->query('attribute_values'));
-                $q->whereHas('variants.values', function ($q2) use ($valueIds) {
-                    $q2->whereIn('attribute_values.id', $valueIds);
-                });
-            });
-        }
-        if ($request->filled('sort')) {
-            $query->when($request->filled('sort'), function ($q) use ($request) {
-                switch ($request->sort) {
-                    case 'newest':
-                        $q->latest(); // orderBy('created_at', 'desc')
-                        break;
-                    case 'cheapest':
-                        $q->orderBy('price', 'asc');
-                        break;
 
-                    case 'expensive':
-                        $q->orderBy('price', 'desc');
-                        break;
-                    case 'best_seller':
-                        $q->withSum('orderItems as total_sold', 'quantity')
-                            ->orderByDesc('total_sold');
-                        break;
-                }
+        if ($request->filled('attribute_values')) {
+            $valueIds = explode(',', $request->query('attribute_values'));
+            $query->whereHas('variants.values', function ($q2) use ($valueIds) {
+                $q2->whereIn('attribute_values.id', $valueIds);
             });
         }
+
         if ($minPrice = $request->get('min_price')) {
             $query->where(function ($q) use ($minPrice) {
                 $q->where('price', '>=', $minPrice)
@@ -368,26 +350,68 @@ class ProductsController extends Controller
             });
         }
 
-        if (!is_null($request->get('in_stock'))) {
-            $inStock = $request->get('in_stock');
+        // ─── وضعیت موجودی ───
+        $inStockFilter = $request->get('in_stock');
+        $onlyInStock = ($inStockFilter == 1);
 
-            if ($inStock == 1) {
-                $query->where(function ($q) {
-                    $q->where('stock', '>', 0)
-                        ->orWhereHas('variants', function ($v) {
-                            $v->where('stock', '>', 0);
-                        });
-                });
-            } else {
-                $query->where(function ($q) {
-                    $q->where('stock', '=', 0)
-                        ->whereDoesntHave('variants', function ($v) {
-                            $v->where('stock', '>', 0);
-                        });
-                });
-            }
+        if ($onlyInStock) {
+            // فقط موجودها (published) — ناموجودها کلاً حذف
+            $query->where('status', 'published');
+        } else {
+            // ناموجودها (unpublished) برن آخر لیست — این باید اولین ORDER BY باشه
+            $query->orderByRaw("
+            CASE
+                WHEN status = 'published' THEN 0
+                ELSE 1
+            END ASC
+        ");
         }
+
+        // ─── مرتب‌سازی اصلی (داخل هر گروه) ───
+        $sort = $request->get('sort');
+
+        switch ($sort) {
+            case 'cheapest':
+                $query->orderByRaw('
+                LEAST(
+                    price,
+                    COALESCE((
+                        SELECT MIN(pv.price)
+                        FROM product_variants pv
+                        WHERE pv.product_id = products.id
+                          AND pv.price > 0
+                    ), price)
+                ) ASC
+            ');
+                break;
+
+            case 'expensive':
+                $query->orderByRaw('
+                GREATEST(
+                    price,
+                    COALESCE((
+                        SELECT MAX(pv.price)
+                        FROM product_variants pv
+                        WHERE pv.product_id = products.id
+                          AND pv.price > 0
+                    ), price)
+                ) DESC
+            ');
+                break;
+
+            case 'best_seller':
+                $query->withSum('orderItems as total_sold', 'quantity')
+                    ->orderByDesc('total_sold');
+                break;
+
+            case 'newest':
+            default:
+                $query->latest();
+                break;
+        }
+
         $products = $query->paginate(15);
+
         return response()->json([
             'success' => true,
             'message' => 'لیست محصولات',
@@ -397,20 +421,29 @@ class ProductsController extends Controller
     public function frontDetail(Request $request, $id)
     {
         $user = $request->user();
+
         $product = Product::with([
             'categories:id,title',
             'images:id,product_id,path',
-            'variants' => function ($q) {
-                $q->has('values'); // فقط variantهایی که values دارند
-            },
             'variants.values.attribute',
             'specifications.values',
             'comments'
         ])
+            ->withCount('variants')
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
 
+        // --- فیلتر شرطی variants ---
+        // اگر محصول بیشتر از یک variant دارد، فقط variantهایی که values دارند می‌مانند
+        // اگر فقط یک variant دارد، حتی بدون values هم می‌ماند
         $variants = $product->variants;
+
+        if ($product->variants_count > 1) {
+            $variants = $variants->filter(function ($variant) {
+                return $variant->values->isNotEmpty();
+            })->values();
+        }
+
         $specs = $product->specifications_with_values;
 
         // --- attributes آماده برای فرانت ---

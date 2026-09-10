@@ -139,6 +139,7 @@ class Order extends Model
             'address.province',
             'address.city',
             'shipping',
+            'gatewayTransactions',
             'items.product',
             'items.variant.values',
             'childOrders' => function ($q) {
@@ -155,48 +156,60 @@ class Order extends Model
     }
     public static function dashboardReport()
     {
+        // تاریخ شروع گزارش
+        $startDate = Carbon::parse('2026-09-10')->startOfDay();
+
         // وضعیت‌های معتبر برای سفارشات موفق
         $validStatuses = ['paid', 'completed', 'shipped', 'delivered'];
-        // کوئری پایه برای سفارشات موفق
-        $baseQuery = self::where(function ($query) use ($validStatuses) {
-            $query->whereIn('status', $validStatuses)
-                ->orWhere('payment_status', 'paid');
-        });
+
+        // کوئری پایه برای سفارشات موفق (از تاریخ شروع به بعد)
+        $baseQuery = self::where('created_at', '>=', $startDate)
+            ->where(function ($query) use ($validStatuses) {
+                $query->whereIn('status', $validStatuses)
+                    ->orWhere('payment_status', 'paid');
+            });
+
         return [
             // تعداد کل سفارشات موفق
-            'total_orders' => $baseQuery->count(),
+            'total_orders' => (clone $baseQuery)->count(),
 
             // مجموع مبلغ فروش (فقط سفارشات موفق)
-            'total_sales' => $baseQuery->sum('total'),
+            'total_sales' => (clone $baseQuery)->sum('total'),
 
             // مجموع تخفیف‌ها (فقط سفارشات موفق)
-            'total_discount' => $baseQuery->sum('discount_amount'),
+            'total_discount' => (clone $baseQuery)->sum('discount_amount'),
 
             // سفارشات امروز (موفق)
-            'today_orders' => self::where(function ($query) use ($validStatuses) {
-                $query->whereIn('status', $validStatuses)
-                    ->orWhere('payment_status', 'paid');
-            })->whereDate('created_at', Carbon::today())->count(),
+            'today_orders' => self::where('created_at', '>=', $startDate)
+                ->where(function ($query) use ($validStatuses) {
+                    $query->whereIn('status', $validStatuses)
+                        ->orWhere('payment_status', 'paid');
+                })
+                ->whereDate('created_at', Carbon::today())
+                ->count(),
 
             // سفارشات ماه جاری (موفق)
-            'month_orders' => self::where(function ($query) use ($validStatuses) {
-                $query->whereIn('status', $validStatuses)
-                    ->orWhere('payment_status', 'paid');
-            })->whereMonth('created_at', Carbon::now()->month)
+            'month_orders' => self::where('created_at', '>=', $startDate)
+                ->where(function ($query) use ($validStatuses) {
+                    $query->whereIn('status', $validStatuses)
+                        ->orWhere('payment_status', 'paid');
+                })
+                ->whereMonth('created_at', Carbon::now()->month)
                 ->whereYear('created_at', Carbon::now()->year)
                 ->count(),
 
             // میانگین مبلغ هر سفارش
-            'average_order_value' => $baseQuery->avg('total') ?? 0,
+            'average_order_value' => (clone $baseQuery)->avg('total') ?? 0,
 
             // بیشترین مبلغ سفارش
-            'max_order_value' => $baseQuery->max('total') ?? 0,
+            'max_order_value' => (clone $baseQuery)->max('total') ?? 0,
 
             // کمترین مبلغ سفارش
-            'min_order_value' => $baseQuery->min('total') ?? 0,
+            'min_order_value' => (clone $baseQuery)->min('total') ?? 0,
 
             // تعداد سفارشات امروز به تفکیک وضعیت
-            'today_status_breakdown' => self::whereDate('created_at', Carbon::today())
+            'today_status_breakdown' => self::where('created_at', '>=', $startDate)
+                ->whereDate('created_at', Carbon::today())
                 ->select('status', DB::raw('count(*) as count'))
                 ->groupBy('status')
                 ->get()
@@ -204,10 +217,11 @@ class Order extends Model
                 ->toArray(),
 
             // تعداد سفارشات ماه جاری به تفکیک روز
-            'monthly_daily_breakdown' => self::where(function ($query) use ($validStatuses) {
-                $query->whereIn('status', $validStatuses)
-                    ->orWhere('payment_status', 'paid');
-            })
+            'monthly_daily_breakdown' => self::where('created_at', '>=', $startDate)
+                ->where(function ($query) use ($validStatuses) {
+                    $query->whereIn('status', $validStatuses)
+                        ->orWhere('payment_status', 'paid');
+                })
                 ->whereMonth('created_at', Carbon::now()->month)
                 ->whereYear('created_at', Carbon::now()->year)
                 ->select(

@@ -7,6 +7,7 @@ use App\Services\SmsService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Modules\Addresses\Models\Address;
 use Modules\Cart\Models\Cart;
@@ -39,14 +40,69 @@ class OrdersController extends Controller
     ) {}
 
     /**
+     * تکمیل گروهی سفارش‌ها
+     */
+    public function bulkComplete(Request $request)
+    {
+        $validated = $request->validate([
+            'ids'   => 'required|array|min:1',
+            'ids.*' => 'integer|exists:orders,id',
+        ]);
+
+        // سفارش‌ها را با روابط لازم لود می‌کنیم
+        $orders = Order::with(['user', 'address'])
+            ->whereIn('id', $validated['ids'])
+            ->whereNotIn('status', ['completed', 'canceled', 'returned'])
+            ->get();
+
+        $updated = 0;
+
+        foreach ($orders as $order) {
+            // آپدیت وضعیت
+            $order->status = 'completed';
+            $order->save();
+            $updated++;
+
+            // ارسال پیامک
+            try {
+                if ($order->user && $order->user->mobile) {
+                    $this->smsService->sendToKavenegar(
+                        'change-order-status',
+                        $order->user->mobile,
+                        $order->id,
+                        [
+                            'token20' => $order->user->getDisplayName(
+                                $order->address?->receiver_name
+                            ),
+                            'token10' => $order->status_label,
+                        ]
+                    );
+                }
+            } catch (\Throwable $e) {
+                // خطای پیامک نباید کل عملیات را متوقف کند
+                Log::warning('SMS send failed for order #' . $order->id, [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$updated} سفارش با موفقیت تکمیل شد.",
+            'updated' => $updated,
+        ]);
+    }
+    /**
      * لیست سفارش‌ها
      */
+
     public function index(Request $request)
     {
         $query = Order::with([
             'user',
             'address',
             'shipping',
+            'gatewayTransactions',
             'childOrders' => function ($query) {
                 $query->with(['user', 'address', 'shipping', 'items']);
             }
@@ -449,13 +505,13 @@ class OrdersController extends Controller
 
     public function todaysOrders(Request $request)
     {
-        $today = Carbon::today();
+        $startDate = Carbon::parse('2026-09-10')->startOfDay();
 
-        $query = Order::with(['items', 'user', 'address', 'shipping'])
-            ->where(function ($q) use ($today) {
-                $q->where(function ($sub) use ($today) {
+        $query = Order::with(['items', 'user', 'address', 'shipping', 'gatewayTransactions'])
+            ->where(function ($q) use ($startDate) {
+                $q->where(function ($sub) use ($startDate) {
                     $sub->where('status', 'paid')
-                        ->whereDate('created_at', $today);
+                        ->where('created_at', '>=', $startDate);
                 })
                     ->orWhere(function ($sub) {
                         $sub->where('status', 'reserved')
@@ -480,23 +536,11 @@ class OrdersController extends Controller
             });
         }
 
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        if ($request->filled('payment_status')) {
-            $query->where('payment_status', $request->payment_status);
-        }
-
-        if ($request->filled('payment_method')) {
-            $query->where('payment_method', $request->payment_method);
-        }
-
         $orders = $query->orderByDesc('created_at')->orderByDesc('id')->get();
 
         return response()->json([
             'success' => true,
-            'message' => 'سفارشات امروز (paid) و رزروهای منقضی شده',
+            'message' => 'سفارشات paid از تاریخ 2026-09-10 و رزروهای منقضی شده',
             'data' => $orders
         ]);
     }
