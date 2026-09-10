@@ -53,18 +53,56 @@ class OrdersController extends Controller
         ])
             ->whereNull('parent_order_id');
 
-        // اگر کوئری جستجو اومد روی نام کاربر یا شماره موبایل اعمال کن
-        if ($search = $request->get('q')) {
+        // سرچ عمومی
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
             $query->where(function ($q) use ($search) {
-                $q->whereHas('user', function ($userQuery) use ($search) {
-                    $userQuery->where('full_name', 'like', "%{$search}%")
-                        ->orWhere('mobile', 'like', "%{$search}%");
-                })
-                    ->orWhereHas('childOrders.user', function ($userQuery) use ($search) {
-                        $userQuery->where('full_name', 'like', "%{$search}%")
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhere('user_id', 'like', "%{$search}%")
+                    ->orWhere('total', 'like', "%{$search}%")
+                    ->orWhere('user_note', 'like', "%{$search}%")
+                    ->orWhere('admin_note', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('childOrders.user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
                     });
             });
+        }
+
+        // سرچ با q (سازگاری با کد قبلی)
+        if ($request->filled('q')) {
+            $search = trim($request->q);
+
+            $query->where(function ($q) use ($search) {
+                $q->whereHas('user', function ($uq) use ($search) {
+                    $uq->where('full_name', 'like', "%{$search}%")
+                        ->orWhere('mobile', 'like', "%{$search}%");
+                })
+                    ->orWhereHas('childOrders.user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        // فیلتر وضعیت
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // فیلتر وضعیت پرداخت
+        if ($request->filled('payment_status')) {
+            $query->where('payment_status', $request->payment_status);
+        }
+
+        // فیلتر روش پرداخت
+        if ($request->filled('payment_method')) {
+            $query->where('payment_method', $request->payment_method);
         }
 
         $orders = $query->latest()->paginate(20);
@@ -409,25 +447,52 @@ class OrdersController extends Controller
         ]);
     }
 
-    public function todaysOrders()
+    public function todaysOrders(Request $request)
     {
         $today = Carbon::today();
 
-        $orders = Order::with(['items', 'user', 'address', 'shipping'])
-            ->where(function ($query) use ($today) {
-                // شرط اول: سفارشات پرداخت شده امروز
-                $query->where(function ($q) use ($today) {
-                    $q->where('status', 'paid')
+        $query = Order::with(['items', 'user', 'address', 'shipping'])
+            ->where(function ($q) use ($today) {
+                $q->where(function ($sub) use ($today) {
+                    $sub->where('status', 'paid')
                         ->whereDate('created_at', $today);
                 })
-                    // شرط دوم: سفارشات رزرو منقضی شده (هر زمانی)
-                    ->orWhere(function ($q) {
-                        $q->where('status', 'reserved')
+                    ->orWhere(function ($sub) {
+                        $sub->where('status', 'reserved')
                             ->where('reserved_until', '<=', now());
                     });
             })
-            ->whereNull('parent_order_id')
-            ->get();
+            ->whereNull('parent_order_id');
+
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhere('user_id', 'like', "%{$search}%")
+                    ->orWhere('total', 'like', "%{$search}%")
+                    ->orWhere('user_note', 'like', "%{$search}%")
+                    ->orWhere('admin_note', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('payment_status')) {
+            $query->where('payment_status', $request->payment_status);
+        }
+
+        if ($request->filled('payment_method')) {
+            $query->where('payment_method', $request->payment_method);
+        }
+
+        $orders = $query->orderByDesc('created_at')->orderByDesc('id')->get();
 
         return response()->json([
             'success' => true,
