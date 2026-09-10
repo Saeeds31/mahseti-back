@@ -17,7 +17,7 @@ class CitiesController extends Controller
 {
     public function frontIndex(Request $request)
     {
-        $query = City::with('province');
+        $query = City::with('province')->where('wp_added', 0);
         if ($province_id = $request->get('province_id')) {
             $query->where('province_id', $province_id);
         }
@@ -55,6 +55,7 @@ class CitiesController extends Controller
     public function store(CityStoreRequest $request, NotificationService $notifications)
     {
         $data = $request->validated();
+        $data['wp_added'] = 0;
 
         $city = City::create($data);
         $notifications->create(
@@ -88,7 +89,7 @@ class CitiesController extends Controller
     public function update(CityUpdateRequest $request, City $city, NotificationService $notifications)
     {
         $data = $request->validated();
-
+        $data['wp_added'] = 0;
         $city->update($data);
         $usedInAddress = Address::where('city_id', $city->id)->exists();
         if ($usedInAddress) {

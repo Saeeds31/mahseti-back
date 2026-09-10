@@ -15,6 +15,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('province_id')->constrained('provinces')->onDelete('cascade');
             $table->string('name');
+            $table->boolean('wp_added')->default(0);
             $table->timestamps();
         });
     }

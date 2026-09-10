@@ -9,9 +9,10 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 class Province extends Model
 {
     use HasFactory;
-    protected $fillable = ['name'];
+    protected $fillable = ['name', 'wp_added'];
 
-    public function cities() {
+    public function cities()
+    {
         return $this->hasMany(City::class);
     }
 }

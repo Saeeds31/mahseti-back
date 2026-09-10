@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 class City extends Model
 {
     use HasFactory;
-    protected $fillable = ['name','province_id'];
+    protected $fillable = ['name','province_id','wp_added'];
     public function province() {
         return $this->belongsTo(Province::class);
     }

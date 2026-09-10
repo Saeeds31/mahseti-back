@@ -14,6 +14,7 @@ return new class extends Migration
         Schema::create('provinces', function (Blueprint $table) {
             $table->id();
             $table->string('name');
+            $table->boolean('wp_added')->default(0);
             $table->timestamps();
         });
     }

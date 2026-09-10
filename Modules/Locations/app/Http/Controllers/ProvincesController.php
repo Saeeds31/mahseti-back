@@ -13,7 +13,10 @@ class ProvincesController extends Controller
 {
     public function frontIndex()
     {
-        $provinces = Province::orderBy('id')->get();
+        $provinces = Province::where('wp_added', 0)
+            ->orderBy('id')
+            ->get();
+
         return response()->json([
             'message' => 'لیست استان ها',
             'success' => true,
@@ -40,7 +43,7 @@ class ProvincesController extends Controller
     public function store(ProvinceStoreRequest $request, NotificationService $notifications)
     {
         $validated = $request->validated();
-
+        $validated['wp_added'] = 0;
         $province = Province::create($validated);
         $notifications->create(
             "ثبت استان",
@@ -76,6 +79,7 @@ class ProvincesController extends Controller
     {
 
         $validated = $request->validated();
+        $validated['wp_added'] = 0;
         $province = Province::findOrFail($id);
         $usedInAddress = Address::where('province_id', $province->id)->exists();
         if ($usedInAddress) {
