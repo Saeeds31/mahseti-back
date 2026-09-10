@@ -1022,6 +1022,7 @@ class OrdersController extends Controller
 
         $reservations = Order::where('user_id', $user->id)
             ->where('status', 'reserved')
+            ->where('payment_status', 'paid')
             ->where('reserved_until', '>', now())
             ->with(['address', 'shipping', 'items.product', 'items.variant'])
             ->orderBy('reserved_until', 'asc')

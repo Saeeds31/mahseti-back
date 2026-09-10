@@ -400,12 +400,16 @@ class ProductsController extends Controller
         $product = Product::with([
             'categories:id,title',
             'images:id,product_id,path',
+            'variants' => function ($q) {
+                $q->has('values'); // فقط variantهایی که values دارند
+            },
             'variants.values.attribute',
             'specifications.values',
             'comments'
         ])
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
+
         $variants = $product->variants;
         $specs = $product->specifications_with_values;
 
@@ -448,7 +452,6 @@ class ProductsController extends Controller
             $attributes[] = $attributesById[$aid];
         }
 
-        // --- ساخت nested_map تو در تو ---
         // --- ساخت nested_map تو در تو بر اساس ترتیب attributeOrder ---
         $nestedMap = [];
         foreach ($variants as $variant) {
@@ -459,6 +462,11 @@ class ProductsController extends Controller
                     'attribute_id' => $v->attribute->id
                 ];
             })->toArray();
+
+            // اگر variant هیچ value ندارد، کلاً رد شو (نباید اتفاق بیفتد چون فیلتر کردیم)
+            if (empty($valueData)) {
+                continue;
+            }
 
             // مرتب‌سازی بر اساس attributeOrder
             usort($valueData, function ($a, $b) use ($attributeOrder) {
@@ -493,12 +501,15 @@ class ProductsController extends Controller
                 $ref = &$ref[$vid];
             }
             $ref = $variantSummary;
+            unset($ref); // شکستن reference برای جلوگیری از باگ‌های بعدی
         }
+
         if ($user) {
             $isInWishList = Wishlist::where('user_id', $user->id)->where('product_id', $product->id)->exists();
         } else {
             $isInWishList = false;
         }
+
         return response()->json([
             'success' => true,
             'data' => [
