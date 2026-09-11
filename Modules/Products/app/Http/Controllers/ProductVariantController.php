@@ -4,6 +4,7 @@ namespace Modules\Products\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Modules\Notifications\Services\NotificationService;
 use Modules\Orders\Models\OrderItem;
 use Modules\Products\Http\Requests\ProductVariantStoreRequest;
@@ -36,6 +37,7 @@ class ProductVariantController extends Controller
         foreach ($data['variants'] as $variantData) {
             // اطلاعات پایه تنوع
             $variantFields = [
+                'wp_added' => false,
                 'sku'   => $variantData['sku'] ?? null,
                 'price' => $variantData['price'],
                 'stock' => $variantData['stock'] ?? 0,
@@ -133,120 +135,6 @@ class ProductVariantController extends Controller
         $variant->delete();
         return response()->json(['message' => 'Variant deleted successfully']);
     }
-    // public function updateAll(Request $request, Product $product, NotificationService $notifications)
-    // {
-    //     $data = $request->validate([
-    //         'variants' => 'required|array',
-    //         'variants.*.id' => 'nullable|exists:product_variants,id',
-    //         'variants.*.sku' => 'nullable|string|max:255',
-    //         'variants.*.price' => 'required|numeric',
-    //         'variants.*.stock' => 'nullable|integer',
-    //         'variants.*.discount_value' => ['nullable', 'integer', 'min:0'],
-    //         'variants.*.discount_type' => ['nullable', 'in:percent,fixed'],
-    //         'variants.*.discount_start_at' => ['nullable', 'date'],
-    //         'variants.*.discount_end_at' => ['nullable', 'date'],
-    //         'variants.*.values' => 'required|array',
-    //         'variants.*.values.*' => 'exists:attribute_values,id',
-    //     ]);
-
-    //     $sentVariantIds = collect($data['variants'])
-    //         ->pluck('id')
-    //         ->filter()
-    //         ->toArray();
-
-    //     // بررسی تنوع‌هایی که قراره حذف بشن
-    //     $variantsToDelete = $product->variants()
-    //         ->whereNotIn('id', $sentVariantIds)
-    //         ->get();
-
-    //     foreach ($variantsToDelete as $variant) {
-    //         // چک کن که آیا این تنوع در سفارش‌ها استفاده شده
-    //         $hasOrders = OrderItem::where('product_variant_id', $variant->id)->exists();
-
-    //         if ($hasOrders) {
-    //             return response()->json([
-    //                 'message' => "تنوع با id '{$variant->id}' در سفارش‌ها استفاده شده و قابل حذف نیست"
-    //             ], 422);
-    //         }
-    //     }
-
-    //     // حذف واریانت‌هایی که در فرم ارسال نشده‌اند و در سفارش استفاده نشده‌اند
-    //     $product->variants()
-    //         ->whereNotIn('id', $sentVariantIds)
-    //         ->delete();
-
-    //     $variants = [];
-    //     foreach ($data['variants'] as $variantData) {
-    //         // بررسی تخفیف برای هر تنوع
-    //         $hasValidDiscount = !empty($variantData['discount_value']) &&
-    //             !empty($variantData['discount_type']) &&
-    //             (empty($variantData['discount_end_at']) || $variantData['discount_end_at'] > now());
-
-    //         if (!empty($variantData['id'])) {
-    //             // واریانت قدیمی -> آپدیت
-    //             $variant = ProductVariant::where('product_id', $product->id)
-    //                 ->where('id', $variantData['id'])
-    //                 ->firstOrFail();
-
-    //             $variantFields = [
-    //                 'sku'   => $variantData['sku'] ?? null,
-    //                 'price' => $variantData['price'],
-    //                 'stock' => $variantData['stock'] ?? 0,
-    //             ];
-
-    //             // اگر تنوع تخفیف جداگانه معتبر داره
-    //             if ($hasValidDiscount) {
-    //                 $variantFields['discount_value'] = $variantData['discount_value'];
-    //                 $variantFields['discount_type'] = $variantData['discount_type'];
-    //                 $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
-    //                 $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
-    //             } else {
-    //                 $variantFields['discount_value'] = null;
-    //                 $variantFields['discount_type'] = null;
-    //                 $variantFields['discount_start_at'] = null;
-    //                 $variantFields['discount_end_at'] = null;
-    //             }
-
-    //             $variant->update($variantFields);
-    //         } else {
-    //             // واریانت جدید -> ایجاد
-    //             $variantFields = [
-    //                 'sku'   => $variantData['sku'] ?? null,
-    //                 'price' => $variantData['price'],
-    //                 'stock' => $variantData['stock'] ?? 0,
-    //             ];
-
-    //             // اگر تنوع تخفیف جداگانه معتبر داره
-    //             if ($hasValidDiscount) {
-    //                 $variantFields['discount_value'] = $variantData['discount_value'];
-    //                 $variantFields['discount_type'] = $variantData['discount_type'];
-    //                 $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
-    //                 $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
-    //             } else {
-    //                 // از تخفیف محصول استفاده کن
-    //                 $variantFields['discount_value'] = $product->discount_value;
-    //                 $variantFields['discount_type'] = $product->discount_type;
-    //                 $variantFields['discount_start_at'] = $product->discount_start_at;
-    //                 $variantFields['discount_end_at'] = $product->discount_end_at;
-    //             }
-
-    //             $variant = $product->variants()->create($variantFields);
-    //         }
-
-    //         $variant->values()->sync($variantData['values']);
-    //         $variants[] = $variant->load('values');
-    //     }
-
-    //     $notifications->create(
-    //         "ویرایش تنوع‌های محصول",
-    //         "تنوع‌های محصول {$product->title} ویرایش شد",
-    //         "notification_product",
-    //         ['product' => $product->id]
-    //     );
-    //     $this->productStockService->sync($product);
-
-    //     return response()->json($variants);
-    // }
     public function updateAll(Request $request, Product $product, NotificationService $notifications)
     {
         $data = $request->validate([
@@ -263,102 +151,143 @@ class ProductVariantController extends Controller
             'variants.*.values.*' => 'exists:attribute_values,id',
         ]);
 
-        $sentVariantIds = collect($data['variants'])
-            ->pluck('id')
-            ->filter()
-            ->toArray();
+        return DB::transaction(function () use ($data, $product, $notifications) {
 
-        // بررسی تنوع‌هایی که قراره حذف بشن
-        // $variantsToDelete = $product->variants()
-        //     ->whereNotIn('id', $sentVariantIds)
-        //     ->get();
+            // ============================================================
+            // ۱. حذف واریانت پیش‌فرض فیک (wp_added=false + values خالی)
+            // ============================================================
+            $fakeVariant = $product->variants()
+                ->where('wp_added', false)
+                ->whereDoesntHave('values')
+                ->first();
 
-        // foreach ($variantsToDelete as $variant) {
-        //     // چک کن که آیا این تنوع در سفارش‌ها استفاده شده
-        //     $hasOrders = OrderItem::where('product_variant_id', $variant->id)->exists();
-
-        //     if ($hasOrders) {
-        //         return response()->json([
-        //             'message' => "تنوع با id '{$variant->id}' در سفارش‌ها استفاده شده و قابل حذف نیست"
-        //         ], 422);
-        //     }
-        // }
-
-        // حذف واریانت‌هایی که در فرم ارسال نشده‌اند و در سفارش استفاده نشده‌اند
-        // $product->variants()
-        //     ->whereNotIn('id', $sentVariantIds)
-        //     ->delete();
-
-        $variants = [];
-        foreach ($data['variants'] as $variantData) {
-            // بررسی تخفیف برای هر تنوع
-            $hasValidDiscount = !empty($variantData['discount_value']) &&
-                !empty($variantData['discount_type']) &&
-                (empty($variantData['discount_end_at']) || $variantData['discount_end_at'] > now());
-
-            if (!empty($variantData['id'])) {
-                // واریانت قدیمی -> آپدیت
-                $variant = ProductVariant::where('product_id', $product->id)
-                    ->where('id', $variantData['id'])
-                    ->firstOrFail();
-
-                $variantFields = [
-                    'sku'   => $variantData['sku'] ?? null,
-                    'price' => $variantData['price'],
-                    'stock' => $variantData['stock'] ?? 0,
-                ];
-
-                // اگر تنوع تخفیف جداگانه معتبر داره
-                if ($hasValidDiscount) {
-                    $variantFields['discount_value'] = $variantData['discount_value'];
-                    $variantFields['discount_type'] = $variantData['discount_type'];
-                    $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
-                    $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
-                } else {
-                    $variantFields['discount_value'] = null;
-                    $variantFields['discount_type'] = null;
-                    $variantFields['discount_start_at'] = null;
-                    $variantFields['discount_end_at'] = null;
-                }
-
-                $variant->update($variantFields);
-            } else {
-                // واریانت جدید -> ایجاد
-                $variantFields = [
-                    'sku'   => $variantData['sku'] ?? null,
-                    'price' => $variantData['price'],
-                    'stock' => $variantData['stock'] ?? 0,
-                ];
-
-                // اگر تنوع تخفیف جداگانه معتبر داره
-                if ($hasValidDiscount) {
-                    $variantFields['discount_value'] = $variantData['discount_value'];
-                    $variantFields['discount_type'] = $variantData['discount_type'];
-                    $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
-                    $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
-                } else {
-                    // از تخفیف محصول استفاده کن
-                    $variantFields['discount_value'] = $product->discount_value;
-                    $variantFields['discount_type'] = $product->discount_type;
-                    $variantFields['discount_start_at'] = $product->discount_start_at;
-                    $variantFields['discount_end_at'] = $product->discount_end_at;
-                }
-
-                $variant = $product->variants()->create($variantFields);
+            if ($fakeVariant) {
+                $this->safeDeleteVariant($fakeVariant);
             }
 
-            $variant->values()->sync($variantData['values']);
-            $variants[] = $variant->load('values');
+            // ============================================================
+            // ۲. حذف واریانت‌های wp_added=false که توی درخواست نیومدن
+            // ============================================================
+            $sentVariantIds = collect($data['variants'])
+                ->pluck('id')
+                ->filter()
+                ->toArray();
+
+            $variantsToDelete = $product->variants()
+                ->where('wp_added', false)
+                ->whereNotIn('id', $sentVariantIds)
+                ->get();
+
+            foreach ($variantsToDelete as $variantToDelete) {
+                $this->safeDeleteVariant($variantToDelete);
+            }
+
+            // ============================================================
+            // ۳. آپدیت/ایجاد واریانت‌های ارسال‌شده (فقط wp_added=false)
+            // ============================================================
+            $variants = [];
+
+            foreach ($data['variants'] as $variantData) {
+                // بررسی تخفیف
+                $hasValidDiscount = !empty($variantData['discount_value']) &&
+                    !empty($variantData['discount_type']) &&
+                    (empty($variantData['discount_end_at']) || $variantData['discount_end_at'] > now());
+
+                if (!empty($variantData['id'])) {
+                    // واریانت قدیمی
+                    $variant = ProductVariant::where('product_id', $product->id)
+                        ->where('id', $variantData['id'])
+                        ->firstOrFail();
+
+                    // ⛔ اگه wp_added=true بود، کلاً نادیده بگیر
+                    if ($variant->wp_added) {
+                        continue;
+                    }
+
+                    $variantFields = [
+                        'wp_added' => false,
+                        'sku'   => $variantData['sku'] ?? null,
+                        'price' => $variantData['price'],
+                        'stock' => $variantData['stock'] ?? 0,
+                    ];
+
+                    if ($hasValidDiscount) {
+                        $variantFields['discount_value'] = $variantData['discount_value'];
+                        $variantFields['discount_type'] = $variantData['discount_type'];
+                        $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
+                        $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
+                    } else {
+                        $variantFields['discount_value'] = null;
+                        $variantFields['discount_type'] = null;
+                        $variantFields['discount_start_at'] = null;
+                        $variantFields['discount_end_at'] = null;
+                    }
+
+                    $variant->update($variantFields);
+                } else {
+                    // واریانت جدید → همیشه wp_added=false
+                    $variantFields = [
+                        'sku'      => $variantData['sku'] ?? null,
+                        'price'    => $variantData['price'],
+                        'stock'    => $variantData['stock'] ?? 0,
+                        'wp_added' => false,
+                    ];
+
+                    if ($hasValidDiscount) {
+                        $variantFields['discount_value'] = $variantData['discount_value'];
+                        $variantFields['discount_type'] = $variantData['discount_type'];
+                        $variantFields['discount_start_at'] = $variantData['discount_start_at'] ?? null;
+                        $variantFields['discount_end_at'] = $variantData['discount_end_at'] ?? null;
+                    } else {
+                        $variantFields['discount_value'] = $product->discount_value;
+                        $variantFields['discount_type'] = $product->discount_type;
+                        $variantFields['discount_start_at'] = $product->discount_start_at;
+                        $variantFields['discount_end_at'] = $product->discount_end_at;
+                    }
+
+                    $variant = $product->variants()->create($variantFields);
+                }
+
+                // اگه values خالی بود یعنی کاربر می‌خواد واریانت بدون value باشه (به ندرت پیش میاد)
+                // ولی طبق درخواست، values اجباریه، پس همیشه sync می‌کنیم
+                $variant->values()->sync($variantData['values']);
+                $variants[] = $variant->load('values');
+            }
+
+            // ============================================================
+            // ۴. sync نهایی موجودی محصول
+            // ============================================================
+            $this->productStockService->sync($product);
+
+            $notifications->create(
+                "ویرایش تنوع‌های محصول",
+                "تنوع‌های محصول {$product->title} ویرایش شد",
+                "notification_product",
+                ['product' => $product->id]
+            );
+
+            return response()->json($variants);
+        });
+    }
+    /**
+     * حذف امن واریانت با چک سفارش‌ها
+     *
+     * @throws \Exception اگه واریانت توی سفارش استفاده شده باشه
+     */
+    protected function safeDeleteVariant(ProductVariant $variant): void
+    {
+        $usageCount = OrderItem::where('product_variant_id', $variant->id)->count();
+
+        if ($usageCount > 0) {
+            throw new \Exception(
+                "تنوع با شناسه {$variant->id} (SKU: {$variant->sku}) در {$usageCount} سفارش استفاده شده و قابل حذف نیست."
+            );
         }
 
-        $notifications->create(
-            "ویرایش تنوع‌های محصول",
-            "تنوع‌های محصول {$product->title} ویرایش شد",
-            "notification_product",
-            ['product' => $product->id]
-        );
-        $this->productStockService->sync($product);
+        // حذف pivot values
+        $variant->values()->detach();
 
-        return response()->json($variants);
+        // حذف خود واریانت
+        $variant->delete();
     }
 }

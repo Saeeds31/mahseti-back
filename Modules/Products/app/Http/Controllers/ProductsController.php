@@ -104,6 +104,7 @@ class ProductsController extends Controller
         // ساخت تنوع پیش فرض
         $variantData = [
             'price' => $product->price,
+            'wp_added' => false,
             'stock' => $product->stock ?? 0,
             'sku' => $product->sku,
         ];
@@ -145,6 +146,46 @@ class ProductsController extends Controller
         $productArray['specifications'] = $groupedSpecifications;
 
         return response()->json($productArray);
+    }
+    /**
+     * تصمیم‌گیری برای sync موجودی بعد از ویرایش محصول
+     */
+    protected function handleVariantsSyncAfterUpdate(Product $product): void
+    {
+        // ۱. بررسی: آیا بیش از یک واریانت با values داریم که wp_added=false باشه؟
+        $hasMultipleVariantsWithValues = $product->variants()
+            ->where('wp_added', false)
+            ->whereHas('values') // واریانت‌هایی که حداقل یک value دارن
+            ->count() > 1;
+
+        if ($hasMultipleVariantsWithValues) {
+            // حالت اول: چند واریانت واقعی (رنگ/سایز) → sync محصول از واریانت‌ها
+            $this->productStockService->sync($product);
+            return;
+        }
+
+        // ۲. حالت دوم: محصول چند واریانت واقعی نداره
+        // بررسی: آیا یک واریانت با wp_added=false و بدون values داریم؟
+        $simpleVariant = $product->variants()
+            ->where('wp_added', false)
+            ->whereDoesntHave('values')
+            ->first();
+
+        if ($simpleVariant) {
+            // موجودی محصول رو به این واریانت بده
+            $simpleVariant->update([
+                'stock' => $product->stock,
+            ]);
+            return;
+        }
+
+        // ۳. حالت سوم: چنین واریانتی نداره → یکی بساز
+        $product->variants()->create([
+            'sku'      => $product->sku,
+            'price'    => $product->price ?? 0,
+            'stock'    => $product->stock ?? 0,
+            'wp_added' => false,
+        ]);
     }
     // آپدیت محصول
     public function update(ProductUpdateRequest $request, Product $product, NotificationService $notifications)
@@ -246,6 +287,10 @@ class ProductsController extends Controller
                 ]);
             }
         }
+        // ============================================================
+        // منطق جدید: تصمیم‌گیری بر اساس وضعیت واریانت‌ها
+        // ============================================================
+        $this->handleVariantsSyncAfterUpdate($product);
 
         $notifications->create(
             "ویرایش محصول",
@@ -253,7 +298,6 @@ class ProductsController extends Controller
             "notification_product",
             ['product' => $product->id]
         );
-        $this->productStockService->sync($product);
 
         return response()->json($product->load('categories', 'images', 'variants'));
     }
@@ -362,7 +406,7 @@ class ProductsController extends Controller
             $query->orderByRaw("
             CASE
                 WHEN status = 'published' THEN 0
-                ELSE 1
+            ELSE 1
             END ASC
         ");
         }
@@ -372,33 +416,12 @@ class ProductsController extends Controller
 
         switch ($sort) {
             case 'cheapest':
-                $query->orderByRaw('
-                LEAST(
-                    price,
-                    COALESCE((
-                        SELECT MIN(pv.price)
-                        FROM product_variants pv
-                        WHERE pv.product_id = products.id
-                          AND pv.price > 0
-                    ), price)
-                ) ASC
-            ');
+                $query->orderBy('price', 'ASC');
                 break;
 
             case 'expensive':
-                $query->orderByRaw('
-                GREATEST(
-                    price,
-                    COALESCE((
-                        SELECT MAX(pv.price)
-                        FROM product_variants pv
-                        WHERE pv.product_id = products.id
-                          AND pv.price > 0
-                    ), price)
-                ) DESC
-            ');
+                $query->orderBy('price', 'DESC');
                 break;
-
             case 'best_seller':
                 $query->withSum('orderItems as total_sold', 'quantity')
                     ->orderByDesc('total_sold');
@@ -433,22 +456,16 @@ class ProductsController extends Controller
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
 
-        // --- فیلتر شرطی variants ---
-        // اگر محصول بیشتر از یک variant دارد، فقط variantهایی که values دارند می‌مانند
-        // اگر فقط یک variant دارد، حتی بدون values هم می‌ماند
-        $variants = $product->variants;
-
-        if ($product->variants_count > 1) {
-            $variants = $variants->filter(function ($variant) {
-                return $variant->values->isNotEmpty();
-            })->values();
-        }
+        // فقط واریانت‌هایی که wp_added=false هستن
+        $variants = $product->variants->filter(function ($variant) {
+            return $variant->wp_added == false;
+        })->values();
 
         $specs = $product->specifications_with_values;
 
         // --- attributes آماده برای فرانت ---
         $attributesById = [];
-        $attributeOrder = []; // ترتیب attributes
+        $attributeOrder = [];
 
         foreach ($variants as $variant) {
             $isAvailable = $variant->stock > 0;
@@ -488,7 +505,6 @@ class ProductsController extends Controller
         // --- ساخت nested_map تو در تو بر اساس ترتیب attributeOrder ---
         $nestedMap = [];
         foreach ($variants as $variant) {
-            // دریافت مقادیر ویژگی‌ها به همراه attribute_id
             $valueData = $variant->values->map(function ($v) {
                 return [
                     'value_id' => $v->id,
@@ -496,7 +512,7 @@ class ProductsController extends Controller
                 ];
             })->toArray();
 
-            // اگر variant هیچ value ندارد، کلاً رد شو (نباید اتفاق بیفتد چون فیلتر کردیم)
+            // اگر variant هیچ value ندارد، کلاً رد شو
             if (empty($valueData)) {
                 continue;
             }
@@ -508,7 +524,6 @@ class ProductsController extends Controller
                 return $posA - $posB;
             });
 
-            // استخراج فقط value_idها به ترتیب جدید
             $valueIds = array_column($valueData, 'value_id');
 
             $variantSummary = [
@@ -534,11 +549,13 @@ class ProductsController extends Controller
                 $ref = &$ref[$vid];
             }
             $ref = $variantSummary;
-            unset($ref); // شکستن reference برای جلوگیری از باگ‌های بعدی
+            unset($ref);
         }
 
         if ($user) {
-            $isInWishList = Wishlist::where('user_id', $user->id)->where('product_id', $product->id)->exists();
+            $isInWishList = Wishlist::where('user_id', $user->id)
+                ->where('product_id', $product->id)
+                ->exists();
         } else {
             $isInWishList = false;
         }
