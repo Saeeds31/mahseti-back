@@ -211,7 +211,7 @@ class ShippingController extends Controller
             ]);
         }
 
-        $subTotal = $cartItems->sum(fn($item) => $item->price * $item->quantity);
+        $subTotal = $cartItems->sum(fn($item) => $item->price_final * $item->quantity);
         $quantity = $cartItems->sum(fn($item) => $item->quantity);
 
         // =====================================================
@@ -493,6 +493,7 @@ class ShippingController extends Controller
         return response()->json([
             'success' => true,
             'methods' => $available,
+            'subTotal' => $subTotal,
             'message' => 'لیست روش های حمل و نقل',
             'has_reservation' => false,
         ]);
