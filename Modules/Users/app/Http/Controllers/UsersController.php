@@ -147,9 +147,11 @@ class UsersController extends Controller
     }
     public function getAddresses(User $user)
     {
+        $addresses = $user->addresses()->with(['province', 'city'])->get();
+
         return response()->json([
             'success' => true,
-            'data' => $user->addresses
+            'data' => $addresses,
         ]);
     }
 }

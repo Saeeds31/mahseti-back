@@ -115,30 +115,10 @@ class OrdersController extends Controller
 
             $query->where(function ($q) use ($search) {
                 $q->where('id', 'like', "%{$search}%")
-                    ->orWhere('user_id', 'like', "%{$search}%")
-                    ->orWhere('total', 'like', "%{$search}%")
-                    ->orWhere('user_note', 'like', "%{$search}%")
-                    ->orWhere('admin_note', 'like', "%{$search}%")
                     ->orWhereHas('user', function ($uq) use ($search) {
                         $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
                     })
-                    ->orWhereHas('childOrders.user', function ($uq) use ($search) {
-                        $uq->where('full_name', 'like', "%{$search}%")
-                            ->orWhere('mobile', 'like', "%{$search}%");
-                    });
-            });
-        }
-
-        // سرچ با q (سازگاری با کد قبلی)
-        if ($request->filled('q')) {
-            $search = trim($request->q);
-
-            $query->where(function ($q) use ($search) {
-                $q->whereHas('user', function ($uq) use ($search) {
-                    $uq->where('full_name', 'like', "%{$search}%")
-                        ->orWhere('mobile', 'like', "%{$search}%");
-                })
                     ->orWhereHas('childOrders.user', function ($uq) use ($search) {
                         $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
@@ -159,6 +139,16 @@ class OrdersController extends Controller
         // فیلتر روش پرداخت
         if ($request->filled('payment_method')) {
             $query->where('payment_method', $request->payment_method);
+        }
+
+        // فیلتر تاریخ از
+        if ($request->filled('date_from')) {
+            $query->where('created_at', '>=', $request->date_from);
+        }
+
+        // فیلتر تاریخ تا
+        if ($request->filled('date_to')) {
+            $query->where('created_at', '<=', $request->date_to);
         }
 
         $orders = $query->latest()->paginate(20);
