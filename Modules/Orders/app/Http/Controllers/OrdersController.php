@@ -103,13 +103,14 @@ class OrdersController extends Controller
             'address',
             'shipping',
             'gatewayTransactions',
+            'items',
             'childOrders' => function ($query) {
                 $query->with(['user', 'address', 'shipping', 'items']);
             }
         ])
             ->whereNull('parent_order_id');
 
-        // سرچ عمومی
+        // سرچ عمومی (نام کامل و موبایل کاربر روی سفارش و آدرس)
         if ($request->filled('search')) {
             $search = trim($request->search);
 
@@ -119,10 +120,39 @@ class OrdersController extends Controller
                         $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
                     })
+                    ->orWhereHas('address', function ($aq) use ($search) {
+                        $aq->where('receiver_name', 'like', "%{$search}%")
+                            ->orWhere('phone', 'like', "%{$search}%");
+                    })
                     ->orWhereHas('childOrders.user', function ($uq) use ($search) {
                         $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
                     });
+            });
+        }
+
+        // سرچ جدا برای آیتم‌های سفارش
+        if ($request->filled('item_search')) {
+            $itemSearch = trim($request->item_search);
+
+            $query->whereHas('items.product', function ($pq) use ($itemSearch) {
+                $pq->where('title', 'like', "%{$itemSearch}%")
+                    ->orWhere('sku', 'like', "%{$itemSearch}%")
+                    ->orWhere('barcode', 'like', "%{$itemSearch}%");
+            });
+        }
+
+        // فیلتر استان
+        if ($request->filled('province_id')) {
+            $query->whereHas('address', function ($aq) use ($request) {
+                $aq->where('province_id', $request->province_id);
+            });
+        }
+
+        // فیلتر شهر
+        if ($request->filled('city_id')) {
+            $query->whereHas('address', function ($aq) use ($request) {
+                $aq->where('city_id', $request->city_id);
             });
         }
 
