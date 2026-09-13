@@ -156,13 +156,14 @@ class ProductVariantController extends Controller
             // ============================================================
             // ۱. حذف واریانت پیش‌فرض فیک (wp_added=false + values خالی)
             // ============================================================
-            $fakeVariant = $product->variants()
+            $fakeVariants = $product->variants()
                 ->where('wp_added', false)
                 ->whereDoesntHave('values')
-                ->first();
+                ->get();
 
-            if ($fakeVariant) {
-                $this->safeDeleteVariant($fakeVariant);
+            // فقط اگه دقیقاً یکی بود، به عنوان fake حذفش کن
+            if ($fakeVariants->count() === 1) {
+                $this->safeDeleteVariant($fakeVariants->first());
             }
 
             // ============================================================
@@ -175,6 +176,7 @@ class ProductVariantController extends Controller
 
             $variantsToDelete = $product->variants()
                 ->where('wp_added', false)
+                ->whereHas('values')  // فقط واریانت‌هایی که values دارند
                 ->whereNotIn('id', $sentVariantIds)
                 ->get();
 

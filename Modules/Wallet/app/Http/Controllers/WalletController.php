@@ -30,6 +30,7 @@ class WalletController extends Controller
             $userName = request()->input('search');
             $walletsQuery->whereHas('user', function ($query) use ($userName) {
                 $query->where('full_name', 'like', "%{$userName}%");
+                $query->orWhere('mobile', 'like', "%{$userName}%");
             });
         }
         $wallets = $walletsQuery->paginate(20);
