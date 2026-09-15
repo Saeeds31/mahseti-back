@@ -33,17 +33,30 @@ class CitiesController extends Controller
      */
     public function index(Request $request)
     {
-        $perPage = $request->get('per_page', 10);
+        $perPage = (int) $request->input('per_page', 10);
+        $perPage = min(max($perPage, 1), 100);
 
-        $query = City::query();
-        if ($search = $request->get('search')) {
+        $query = City::query()->where('wp_added', 0);
+
+        // فیلتر بر اساس استان
+        if ($provinceId = $request->input('province_id')) {
+            $query->where('province_id', $provinceId);
+        }
+
+        // فیلتر جستجو بر اساس نام
+        if ($search = $request->input('search')) {
+            $search = str_replace(['%', '_'], ['\%', '\_'], $search);
             $query->where('name', 'like', "%{$search}%");
         }
-        $cities = $query->with('province')->paginate($perPage);
+
+        $cities = $query->with('province')
+            ->orderBy('name')
+            ->paginate($perPage);
+
         return response()->json([
             'success' => true,
             'message' => 'لیست شهرها',
-            'data'    => $cities
+            'data'    => $cities,
         ]);
     }
 

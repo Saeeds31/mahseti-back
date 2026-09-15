@@ -629,6 +629,15 @@ class ShippingController extends Controller
                     'is_reservation_method' => false,
                     'message' => null
                 ];
+            } elseif ($cost == 0) {
+                $available[] = [
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'cost' => $cost > 0 ? $cost : (int) $shipping->cost,
+                    'is_reservation_method' => false,
+                    'message' => null
+                ];
             }
         }
 

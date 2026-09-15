@@ -123,10 +123,6 @@ class OrdersController extends Controller
                     ->orWhereHas('address', function ($aq) use ($search) {
                         $aq->where('receiver_name', 'like', "%{$search}%")
                             ->orWhere('phone', 'like', "%{$search}%");
-                    })
-                    ->orWhereHas('childOrders.user', function ($uq) use ($search) {
-                        $uq->where('full_name', 'like', "%{$search}%")
-                            ->orWhere('mobile', 'like', "%{$search}%");
                     });
             });
         }
@@ -181,7 +177,7 @@ class OrdersController extends Controller
             $query->where('created_at', '<=', $request->date_to);
         }
 
-        $orders = $query->latest()->paginate(20);
+        $orders = $query->orderBy('created_at', 'desc')->paginate(20);
 
         return response()->json([
             'message' => "لیست سفارشات",
@@ -420,7 +416,7 @@ class OrdersController extends Controller
         // بررسی تغییر وضعیت به مواردی که نیاز به عملیات خاص دارن
         if (isset($data['status'])) {
             // مثال: اگر سفارش لغو شد،و از قبل پرداختی داشت موجودی کیف پول یا محصولات برگشت داده شود
-            if ($order->status == 'paid' && $data['status'] === 'canceled') {
+            if ($order->status == 'paid' && $data['status'] === 'failed') {
                 // برگشت مبلغ به کیف پول
                 if ($order->payment_status === 'paid') {
                     $order->user->wallet()->increment('balance', $order->total);
@@ -445,6 +441,9 @@ class OrdersController extends Controller
         // بروزرسانی وضعیت سفارش اصلی
         if (isset($data['status'])) {
             $order->status = $data['status'];
+        }
+        if ($data['status'] === 'paid') {
+            $order->payment_status = 'paid';
         }
 
         $order->save();

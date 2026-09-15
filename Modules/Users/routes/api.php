@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use Modules\Users\Http\Controllers\AuthController;
 use Modules\Users\Http\Controllers\RolesController;
+use Modules\Users\Http\Controllers\UserMergeController;
 use Modules\Users\Http\Controllers\UsersController;
 
 Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
@@ -14,13 +15,15 @@ Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::get('/all-permissions', [RolesController::class, 'allPermissions'])->name("allPermissions");
     Route::post('/save-permissions', [RolesController::class, 'savePermissions'])->name("savePermissions");
     Route::get('/users/{user}/addresses', [UsersController::class, 'getAddresses']);
+    Route::get('/users-duplicates', [UserMergeController::class, 'index'])->name("duplicates");
+    Route::post('/users-merge',     [UserMergeController::class, 'merge'])->name("merge");
 });
 Route::post('v1/admin/login-verify', [AuthController::class, 'adminLogin'])->name("adminLogin");
 Route::post('v1/admin/send-token', [AuthController::class, 'adminSendToken'])->name("adminSendToken");
 Route::prefix('v1/front')->group(function () {
     Route::post('/check-mobile', [AuthController::class, 'checkMobile']);
     Route::post('/login-password', [AuthController::class, 'loginWithPassword']);
-    Route::post('/send-otp', [AuthController::class,'sendOtpAgain']);
+    Route::post('/send-otp', [AuthController::class, 'sendOtpAgain']);
     Route::post('/verify-otp', [AuthController::class, 'verifyOtp']);
     Route::post('/register', [AuthController::class, 'register']);
     Route::get('/user/logout', [AuthController::class, 'logoutUserFront']);
