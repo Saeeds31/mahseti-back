@@ -4,6 +4,7 @@ namespace Modules\Addresses\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Modules\Addresses\Http\Requests\AddressStoreRequest;
 use Modules\Addresses\Http\Requests\AddressUpdateRequest;
 use Modules\Addresses\Models\Address;
@@ -190,5 +191,91 @@ class AddressesController extends Controller
             'success' => true,
             'message' => 'آدرس با موفقیت حذف شد'
         ]);
+    }
+    /**
+     * حذف آدرس توسط ادمین
+     * اگر آدرس در سفارشی استفاده شده باشد، اجازه حذف داده نمیشود
+     * و باید از طریق ادغام اقدام کند
+     */
+    public function adminDestroy(User $user, Address $address, NotificationService $notifications)
+    {
+        if ($address->user_id !== $user->id) {
+            return response()->json(['error' => 'آدرس به این کاربر تعلق ندارد'], 403);
+        }
+
+        $hasOrders = Order::where('address_id', $address->id)->exists();
+
+        if ($hasOrders) {
+            return response()->json([
+                'error' => 'این آدرس در سفارشی استفاده شده و قابل حذف نیست. می‌توانید آن را با آدرس دیگری ادغام کنید.'
+            ], 422);
+        }
+
+        $address->delete();
+
+        $notifications->create(
+            "حذف آدرس",
+            "آدرس کاربر {$user->full_name} از سیستم توسط ادمین حذف شد",
+            "notification_users",
+            ['address' => $address->id]
+        );
+
+        return response()->json(['message' => 'آدرس با موفقیت حذف شد']);
+    }
+
+    /**
+     * ادغام دو آدرس توسط ادمین:
+     *  - همه سفارش‌های آدرس قدیمی به آدرس جدید منتقل می‌شوند
+     *  - آدرس قدیمی حذف می‌شود
+     */
+    public function adminMerge(User $user, Address $address, Request $request, NotificationService $notifications)
+    {
+        if ($address->user_id !== $user->id) {
+            return response()->json(['error' => 'آدرس به این کاربر تعلق ندارد'], 403);
+        }
+
+        $data = $request->validate([
+            'new_address_id' => ['required', 'exists:addresses,id'],
+        ]);
+
+        $newAddress = Address::where('user_id', $user->id)->findOrFail($data['new_address_id']);
+
+        if ($newAddress->id === $address->id) {
+            return response()->json(['error' => 'آدرس جدید نمی‌تواند با آدرس قدیمی یکی باشد'], 422);
+        }
+
+        DB::beginTransaction();
+        try {
+            // انتقال همه سفارش‌ها به آدرس جدید
+            $ordersCount = Order::where('address_id', $address->id)->count();
+            Order::where('address_id', $address->id)
+                ->update(['address_id' => $newAddress->id]);
+
+            // حذف آدرس قدیمی
+            $oldId = $address->id;
+            $address->delete();
+
+            $notifications->create(
+                "ادغام آدرس",
+                "آدرس {$oldId} کاربر {$user->full_name} با آدرس {$newAddress->id} ادغام شد ({$ordersCount} سفارش منتقل شد)",
+                "notification_users",
+                [
+                    'old_address' => $oldId,
+                    'new_address' => $newAddress->id,
+                    'orders_moved' => $ordersCount
+                ]
+            );
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => "ادغام با موفقیت انجام شد. {$ordersCount} سفارش منتقل شد.",
+                'orders_moved' => $ordersCount,
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['error' => 'خطا در ادغام: ' . $e->getMessage()], 500);
+        }
     }
 }

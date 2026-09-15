@@ -12,6 +12,8 @@ Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
         Route::put('{address}', [AddressesController::class, 'update']);
         Route::delete('{address}', [AddressesController::class, 'destroy']);
     });
+    Route::delete('/users/{user}/addresses/{address}/admin', [AddressesController::class, 'adminDestroy']);
+    Route::post('/users/{user}/addresses/{address}/merge', [AddressesController::class, 'adminMerge']);
 });
 Route::middleware(['auth:sanctum'])->prefix('v1/front')->group(function () {
     Route::get('addresses', [AddressesController::class, 'frontIndex'])->name('front-addresses-index');

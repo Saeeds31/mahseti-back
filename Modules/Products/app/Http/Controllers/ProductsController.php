@@ -57,6 +57,18 @@ class ProductsController extends Controller
         return response()->json($products);
     }
 
+    public function productSearchAdmin(Request $request)
+    {
+        $query = Product::with(['categories', 'images', 'variants.values'])->where('status', 'published');
+        // جستجو
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%");
+            });
+        }
+        $products = $query->latest()->paginate(15);
+        return response()->json($products);
+    }
     // ذخیره محصول
     public function store(ProductStoreRequest $request, NotificationService $notifications)
     {

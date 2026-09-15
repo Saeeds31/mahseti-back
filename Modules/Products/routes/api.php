@@ -6,6 +6,7 @@ use Modules\Products\Http\Controllers\ProductVariantController;
 
 Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::apiResource('products', ProductsController::class)->names('products');
+    Route::get('products-search', [ProductsController::class, 'productSearchAdmin'])->name('products-search-admin');
     Route::post('products-variants/{product}/update-all', [ProductVariantController::class, 'updateAll']);
     Route::prefix('product-variant/{product}')->group(function () {
         Route::get('variants', [ProductVariantController::class, 'index']);

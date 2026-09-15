@@ -28,8 +28,11 @@ class ProvincesController extends Controller
      */
     public function index()
     {
-        $provinces = Province::with('cities')->get();
-
+        $provinces = Province::with(['cities' => function ($query) {
+            $query->where(function ($q) {
+                $q->where('wp_added', false);
+            });
+        }])->where('id', '<=', 31)->get();
         return response()->json([
             'success' => true,
             'message' => 'لیست استان ها',
