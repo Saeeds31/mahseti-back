@@ -49,7 +49,27 @@ class PaymentFailureService
             if ($order->payment_status === 'failed') {
                 return;
             }
+            // s31
+            $verifiedTransaction = $order->gatewayTransactions()
+                ->whereNotNull('verify_data')
+                ->get()
+                ->first(function ($t) {
+                    $data = $t->verify_data;
+                    if (empty($data)) return false;
 
+                    return match ($t->gateway) {
+                        'parsian'  => ($data['status'] ?? -1) == 0,
+                        'zarinpal' => in_array($data['code'] ?? null, [100, 101]),
+                        'zibal'    => in_array($data['result'] ?? null, [100, 201]),
+                        default    => false,
+                    };
+                });
+            if ($verifiedTransaction) {
+                Log::channel('daily')->warning(
+                    "Order #{$order->id} NOT failed: verified transaction exists"
+                );
+                return;
+            }
             /*
              * تراکنش درگاه
              */

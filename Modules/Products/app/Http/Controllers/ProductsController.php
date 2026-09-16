@@ -270,7 +270,7 @@ class ProductsController extends Controller
             }
         }
         // اگر تخفیف ارسال نشده → هیچ کاری با تنوع‌ها نکن
-
+        $data['created_at'] = now();
         $product->update($data);
 
         // دسته‌بندی‌ها
@@ -441,7 +441,7 @@ class ProductsController extends Controller
 
             case 'newest':
             default:
-                $query->latest();
+                $query->orderBy('created_at', 'desc');
                 break;
         }
 

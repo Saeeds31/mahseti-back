@@ -4,6 +4,7 @@ namespace Modules\Payment\Services;
 
 use App\Services\SmsService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Notifications\Services\NotificationService;
 use Modules\Orders\Models\Order;
@@ -93,26 +94,30 @@ class PaymentCompletionService
 
         $user = $order->user;
 
-        $this->notificationService->create(
-            'سفارش کامل شد',
-            'پرداخت سفارش با موفقیت انجام شد.',
-            'notification_order',
-            [
-                'order' => $order->id,
-            ]
-        );
-
-        $this->smsService->sendToKavenegar(
-            'createorderuser',
-            $user->mobile,
-            $order->id,
-            [
-                'token20' => $user->getDisplayName(
-                    $order->address->receiver_name
-                ),
-            ]
-        );
-
+        try {
+            $this->notificationService->create(
+                'سفارش کامل شد',
+                'پرداخت سفارش با موفقیت انجام شد.',
+                'notification_order',
+                ['order' => $order->id]
+            );
+        } catch (\Throwable $e) {
+            Log::channel('payment')->error(
+                "Order #{$order->id} notification failed: " . $e->getMessage()
+            );
+        }
+        try {
+            $this->smsService->sendToKavenegar(
+                'createorderuser',
+                $user->mobile,
+                $order->id,
+                ['token20' => $user->getDisplayName($order->address->receiver_name)]
+            );
+        } catch (\Throwable $e) {
+            Log::channel('payment')->error(
+                "Order #{$order->id} SMS failed: " . $e->getMessage()
+            );
+        }
         // $this->smsService->sendToAdmins(
         //     'customer-order-admin',
         //     $order->id

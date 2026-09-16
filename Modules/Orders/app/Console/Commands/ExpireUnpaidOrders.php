@@ -40,7 +40,7 @@ class ExpireUnpaidOrders extends Command
                 ->where(
                     'created_at',
                     '<=',
-                    now()->subMinutes(10)
+                    now()->subMinutes(15)
                 );
 
             $totalOrders = $ordersQuery->count();

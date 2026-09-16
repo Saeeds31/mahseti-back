@@ -68,6 +68,7 @@ class ProductStockService
                 $lockedProduct->update($updateData);
 
                 if ($isChanged && $newStatus === 'published' && $totalStock > 0) {
+                    $lockedProduct->update(['created_at' => now()]);
                     // محصول موجود شده → پردازش درخواست‌ها
                     app(StockAlertService::class)->processPendingAlerts($lockedProduct);
                 }

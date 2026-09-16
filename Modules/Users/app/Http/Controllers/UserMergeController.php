@@ -90,8 +90,10 @@ class UserMergeController extends Controller
         if ($search) {
             $duplicates = array_filter($duplicates, function ($group) use ($search) {
                 foreach ($group as $u) {
-                    if (str_contains($u->mobile, $search) ||
-                        str_contains($u->full_name ?? '', $search)) {
+                    if (
+                        str_contains($u->mobile, $search) ||
+                        str_contains($u->full_name ?? '', $search)
+                    ) {
                         return true;
                     }
                 }
@@ -152,100 +154,127 @@ class UserMergeController extends Controller
     }
 
     /**
-     * ادغام یک کاربر تکراری در کاربر اصلی
+     * ادغام چند کاربر تکراری در کاربر اصلی
      * POST /api/admin/users/merge
-     * Body: { primary_id, duplicate_id }
+     * Body: { primary_id, duplicate_ids: [1, 2, 3] }
      */
     public function merge(Request $request)
     {
         $validated = $request->validate([
-            'primary_id'   => 'required|integer|exists:users,id',
-            'duplicate_id' => 'required|integer|exists:users,id|different:primary_id',
+            'primary_id'    => 'required|integer|exists:users,id',
+            'duplicate_ids' => 'required|array|min:1',
+            'duplicate_ids.*' => 'required|integer|exists:users,id',
         ]);
 
-        $primaryId   = (int) $validated['primary_id'];
-        $duplicateId = (int) $validated['duplicate_id'];
+        $primaryId    = (int) $validated['primary_id'];
+        $duplicateIds = array_map('intval', $validated['duplicate_ids']);
 
-        // قانون: اصلی همیشه ID کوچک‌تر است
-        if ($primaryId > $duplicateId) {
+        // حذف خود primary از لیست duplicate ها (اگر بود)
+        $duplicateIds = array_values(array_filter($duplicateIds, fn($id) => $id !== $primaryId));
+
+        if (empty($duplicateIds)) {
             return response()->json([
                 'success' => false,
-                'message' => 'کاربر اصلی باید ID کوچک‌تری داشته باشد.',
+                'message' => 'هیچ کاربر تکراری معتبری انتخاب نشده است.',
             ], 422);
         }
 
-        $primary   = User::find($primaryId);
-        $duplicate = User::find($duplicateId);
+        // قانون: primary باید ID کوچک‌تر از همه duplicates باشد
+        foreach ($duplicateIds as $dupId) {
+            if ($primaryId > $dupId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "کاربر اصلی (ID: {$primaryId}) باید ID کوچک‌تری از کاربر تکراری (ID: {$dupId}) داشته باشد.",
+                ], 422);
+            }
+        }
 
-        if (!$primary || !$duplicate) {
+        $primary = User::find($primaryId);
+        if (!$primary) {
             return response()->json([
                 'success' => false,
-                'message' => 'کاربر یافت نشد.',
+                'message' => 'کاربر اصلی یافت نشد.',
             ], 404);
         }
 
-        // بررسی هم‌شماره بودن
-        if ($this->normalizeMobile($primary->mobile) !== $this->normalizeMobile($duplicate->mobile)) {
+        // بررسی هم‌شماره بودن همه
+        $primaryMobile = $this->normalizeMobile($primary->mobile);
+        $duplicates = User::whereIn('id', $duplicateIds)->get();
+
+        if ($duplicates->count() !== count($duplicateIds)) {
             return response()->json([
                 'success' => false,
-                'message' => 'شماره این دو کاربر یکسان نیست. امکان ادغام وجود ندارد.',
-            ], 422);
+                'message' => 'برخی از کاربران تکراری یافت نشدند.',
+            ], 404);
+        }
+
+        foreach ($duplicates as $dup) {
+            if ($this->normalizeMobile($dup->mobile) !== $primaryMobile) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "شماره کاربر #{$dup->id} با کاربر اصلی یکسان نیست.",
+                ], 422);
+            }
         }
 
         $report = [
+            'users_merged'       => 0,
             'addresses_moved'    => 0,
             'orders_moved'       => 0,
-            'wallet_merged'      => false,
+            'wallet_merged'      => 0,
             'transactions_moved' => 0,
-            'user_deleted'       => false,
+            'merged_user_ids'    => [],
         ];
 
         try {
-            DB::transaction(function () use ($primaryId, $duplicateId, &$report) {
-                // ۱. آدرس‌ها
-                $report['addresses_moved'] = Address::where('user_id', $duplicateId)
-                    ->update(['user_id' => $primaryId]);
+            DB::transaction(function () use ($primaryId, $duplicateIds, &$report) {
+                foreach ($duplicateIds as $duplicateId) {
+                    // ۱. آدرس‌ها
+                    $report['addresses_moved'] += Address::where('user_id', $duplicateId)
+                        ->update(['user_id' => $primaryId]);
 
-                // ۲. سفارش‌ها
-                $report['orders_moved'] = Order::where('user_id', $duplicateId)
-                    ->update(['user_id' => $primaryId]);
+                    // ۲. سفارش‌ها
+                    $report['orders_moved'] += Order::where('user_id', $duplicateId)
+                        ->update(['user_id' => $primaryId]);
 
-                // ۳. کیف پول
-                $dupWallet     = Wallet::where('user_id', $duplicateId)->first();
-                $primaryWallet = Wallet::where('user_id', $primaryId)->first();
+                    // ۳. کیف پول
+                    $dupWallet     = Wallet::where('user_id', $duplicateId)->first();
+                    $primaryWallet = Wallet::where('user_id', $primaryId)->first();
 
-                if ($dupWallet) {
-                    if (!$primaryWallet) {
-                        // انتقال کیف پول
-                        $dupWallet->user_id = $primaryId;
-                        $dupWallet->save();
-                        $report['wallet_merged'] = true;
-                    } else {
-                        // ادغام موجودی
-                        $primaryWallet->balance += $dupWallet->balance;
-                        $primaryWallet->save();
+                    if ($dupWallet) {
+                        if (!$primaryWallet) {
+                            // انتقال کیف پول
+                            $dupWallet->user_id = $primaryId;
+                            $dupWallet->save();
+                            $primaryWallet = $dupWallet;
+                            $report['wallet_merged']++;
+                        } else {
+                            // ادغام موجودی
+                            $primaryWallet->balance += $dupWallet->balance;
+                            $primaryWallet->save();
 
-                        // انتقال تراکنش‌ها
-                        $report['transactions_moved'] = WalletTransaction::where('wallet_id', $dupWallet->id)
-                            ->update(['wallet_id' => $primaryWallet->id]);
+                            // انتقال تراکنش‌ها
+                            $report['transactions_moved'] += WalletTransaction::where('wallet_id', $dupWallet->id)
+                                ->update(['wallet_id' => $primaryWallet->id]);
 
-                        // حذف کیف پول تکراری
-                        $dupWallet->delete();
-                        $report['wallet_merged'] = true;
+                            // حذف کیف پول تکراری
+                            $dupWallet->delete();
+                            $report['wallet_merged']++;
+                        }
                     }
-                }
 
-                // ۴. حذف کاربر تکراری
-                User::where('id', $duplicateId)->delete();
-                $report['user_deleted'] = true;
+                    // ۴. حذف کاربر تکراری
+                    User::where('id', $duplicateId)->delete();
+                    $report['merged_user_ids'][] = $duplicateId;
+                    $report['users_merged']++;
+                }
             });
 
             return response()->json([
                 'success' => true,
-                'message' => 'ادغام با موفقیت انجام شد.',
+                'message' => "{$report['users_merged']} کاربر با موفقیت ادغام شدند.",
                 'data'    => $report,
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
