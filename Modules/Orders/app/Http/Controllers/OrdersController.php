@@ -1964,4 +1964,217 @@ class OrdersController extends Controller
 
         return $order;
     }
+    /**
+     * لیست سفارش‌هایی که پرداختشون verify شده ولی به هر دلیل paid نشدن
+     * از تاریخ 2026-09-10 به بعد
+     */
+    public function problematicOrders(Request $request)
+    {
+        // --------------------------------------------------------
+        // 0) تاریخ شروع گزارش
+        // --------------------------------------------------------
+        $startDate = Carbon::parse('2026-09-10')->startOfDay();
+
+        // --------------------------------------------------------
+        // 1) نوع مشکل
+        // --------------------------------------------------------
+        $type = $request->get('type', 'all'); // all | verified_not_paid | failed_with_payment | stuck
+
+        $query = Order::with([
+            'user',
+            'address.province',
+            'address.city',
+            'shipping',
+            'gatewayTransactions',
+            'items.product',
+            'items.variant.values',
+        ])
+            ->whereNull('parent_order_id')          // فقط سفارش‌های والد
+            ->where('created_at', '>=', $startDate); // ✅ از تاریخ 2026-09-10 به بعد
+
+        // --------------------------------------------------------
+        // 2) اعمال فیلتر بر اساس نوع مشکل
+        // --------------------------------------------------------
+        switch ($type) {
+
+            case 'verified_not_paid':
+                $query->where('payment_status', '!=', 'paid')
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('paid_at')
+                            ->where('status', 'paid');
+                    });
+                break;
+
+            case 'failed_with_payment':
+                $query->where('status', 'failed')
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('verify_data');
+                    });
+                break;
+
+            case 'stuck':
+                $query->whereIn('status', ['pending', 'reserved'])
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('paid_at')
+                            ->where('status', 'paid');
+                    });
+                break;
+
+            case 'all':
+            default:
+                $query->where(function ($q) {
+                    $q->where(function ($sub) {
+                        $sub->where('payment_status', '!=', 'paid')
+                            ->whereHas('gatewayTransactions', function ($gt) {
+                                $gt->whereNotNull('paid_at')
+                                    ->where('status', 'paid');
+                            });
+                    })
+                        ->orWhere(function ($sub) {
+                            $sub->where('status', 'failed')
+                                ->whereHas('gatewayTransactions', function ($gt) {
+                                    $gt->whereNotNull('verify_data');
+                                });
+                        });
+                });
+                break;
+        }
+
+        // --------------------------------------------------------
+        // 3) فیلترهای اختیاری
+        // --------------------------------------------------------
+
+        if ($request->filled('date_from')) {
+            $query->where('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->where('created_at', '<=', $request->date_to);
+        }
+
+        if ($request->filled('gateway')) {
+            $query->whereHas('gatewayTransactions', function ($q) use ($request) {
+                $q->where('gateway', $request->gateway);
+            });
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', $request->user_id);
+        }
+
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        // --------------------------------------------------------
+        // 4) بدون صفحه‌بندی
+        // --------------------------------------------------------
+        $orders = $query->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+
+        // --------------------------------------------------------
+        // 5) تحلیل مشکل هر سفارش
+        // --------------------------------------------------------
+        $orders->each(function ($order) {
+            $order->problem_analysis = $this->analyzeOrderProblem($order);
+        });
+
+        // --------------------------------------------------------
+        // 6) آمار
+        // --------------------------------------------------------
+        $stats = [
+            'total' => $orders->count(),
+            'by_status' => $orders->groupBy('status')->map->count(),
+            'by_payment_status' => $orders->groupBy('payment_status')->map->count(),
+            'total_amount_at_risk' => $orders->where('payment_status', '!=', 'paid')->sum('total'),
+            'start_date' => $startDate->toDateString(), // برای نمایش توی پاسخ
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'سفارش‌های مشکل‌دار از تاریخ ' . $startDate->toDateString(),
+            'stats' => $stats,
+            'data' => $orders,
+        ]);
+    }
+    /**
+     * تحلیل مشکل هر سفارش
+     */
+    private function analyzeOrderProblem(Order $order): array
+    {
+        $problems = [];
+        $hasVerifiedTransaction = false;
+        $hasPaidTransaction = false;
+        $latestTransaction = $order->gatewayTransactions
+            ->sortByDesc('created_at')
+            ->first();
+
+        foreach ($order->gatewayTransactions as $t) {
+            // چک کردن verify موفق (بر اساس درگاه)
+            if ($this->isTransactionVerified($t)) {
+                $hasVerifiedTransaction = true;
+            }
+
+            if ($t->paid_at) {
+                $hasPaidTransaction = true;
+            }
+        }
+
+        // تشخیص نوع مشکل
+        if ($hasVerifiedTransaction && $order->payment_status !== 'paid') {
+            $problems[] = 'پرداخت verify شده ولی سفارش paid نشده';
+        }
+
+        if ($order->status === 'failed' && $hasVerifiedTransaction) {
+            $problems[] = 'سفارش failed شده ولی پرداخت موفق بوده';
+        }
+
+        if ($order->status === 'failed' && $latestTransaction) {
+            $problems[] = 'علت fail: ' . ($latestTransaction->message ?? 'نامشخص');
+        }
+
+        if ($hasPaidTransaction && !$order->paid_at) {
+            $problems[] = 'تراکنش paid_at دارد ولی سفارش هنوز pending است';
+        }
+
+        return [
+            'problems' => $problems,
+            'has_verified_transaction' => $hasVerifiedTransaction,
+            'has_paid_transaction' => $hasPaidTransaction,
+            'latest_transaction' => $latestTransaction ? [
+                'id' => $latestTransaction->id,
+                'gateway' => $latestTransaction->gateway,
+                'status' => $latestTransaction->status,
+                'message' => $latestTransaction->message,
+                'paid_at' => $latestTransaction->paid_at,
+                'verify_data' => $latestTransaction->verify_data,
+            ] : null,
+        ];
+    }
+
+    /**
+     * بررسی verify موفق بر اساس نوع درگاه
+     */
+    private function isTransactionVerified($transaction): bool
+    {
+        $data = $transaction->verify_data;
+        if (empty($data)) {
+            return false;
+        }
+
+        return match ($transaction->gateway) {
+            'parsian'  => ($data['status'] ?? -1) == 0,
+            'zarinpal' => in_array($data['code'] ?? $data['Status'] ?? null, [100, 101]),
+            'zibal'    => in_array($data['result'] ?? null, [100, 201]),
+            default    => false,
+        };
+    }
 }
