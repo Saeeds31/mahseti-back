@@ -81,6 +81,7 @@ class PublishScheduledProducts extends Command
         try {
             $product->update([
                 'status' => 'published',
+                'created_at' => now(),
             ]);
             $this->processedCount++;
             Log::channel('daily')->info(
