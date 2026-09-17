@@ -67,15 +67,18 @@ class ZarinpalDriver implements GatewayInterface
 
         // برای زرین‌پال، مبلغ باید به ریال باشد (تومان * 10)
         $amountInRial = $this->money->tomanToRial($transaction->amount);
-
+        $user = $transaction->payable->user ?? null;
+        $userName = $user?->full_name ?? 'کاربر';
+        $userMobile = $user?->mobile ?? '';
         $response = Http::acceptJson()
             ->post($this->requestUrl, [
                 'merchant_id' => $this->merchant,
                 'amount' => $amountInRial,
                 'callback_url' => route($callbackRoute, $transaction->gateway),
-                'description' => "پرداخت سفارش شماره {$transaction->id}",
+                'description' => "پرداخت سفارش شماره {$transaction->id}  - کاربر: {$userName}",
                 'metadata' => [
                     'order_id' =>  (string) $transaction->id,
+                    'mobile' => $userMobile,
                 ],
             ])
             ->throw()
