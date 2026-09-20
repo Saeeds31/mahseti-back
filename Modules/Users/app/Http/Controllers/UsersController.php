@@ -127,9 +127,9 @@ class UsersController extends Controller
     public function update(UserUpdateRequest $request, User $user)
     {
         $data = $request->validated();
-        if (isset($data['mobile'])) {
-            unset($data['mobile']);
-        }
+        // if (isset($data['mobile'])) {
+        //     unset($data['mobile']);
+        // }
         if (!empty($data['password'])) {
             $data['password'] = Hash::make($data['password']);
         } else {

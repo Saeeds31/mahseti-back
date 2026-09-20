@@ -260,10 +260,7 @@ class ProductVariantController extends Controller
             // ۴. sync نهایی موجودی محصول
             // ============================================================
             $this->productStockService->sync($product);
-            if ($product->status === 'published') {
-                $product->created_at = now();
-                $product->save();
-            }
+           
 
             $notifications->create(
                 "ویرایش تنوع‌های محصول",

@@ -173,10 +173,6 @@ class ProductsController extends Controller
         if ($hasMultipleVariantsWithValues) {
             // حالت اول: چند واریانت واقعی (رنگ/سایز) → sync محصول از واریانت‌ها
             $this->productStockService->sync($product);
-            if ($product->status === 'published') {
-                $product->created_at = now();
-                $product->save();
-            }
             return;
         }
 
@@ -192,10 +188,6 @@ class ProductsController extends Controller
             $simpleVariant->update([
                 'stock' => $product->stock,
             ]);
-            if ($product->stock != 0) {
-                $product->created_at = now();
-                $product->save();
-            }
             return;
         }
 
@@ -206,10 +198,7 @@ class ProductsController extends Controller
             'stock'    => $product->stock ?? 0,
             'wp_added' => false,
         ]);
-        if ($product->stock != 0) {
-            $product->created_at = now();
-            $product->save();
-        }
+        
     }
     // آپدیت محصول
     public function update(ProductUpdateRequest $request, Product $product, NotificationService $notifications)

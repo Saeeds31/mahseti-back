@@ -17,6 +17,7 @@ Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
     Route::get('/users/{user}/addresses', [UsersController::class, 'getAddresses']);
     Route::get('/users-duplicates', [UserMergeController::class, 'index'])->name("duplicates");
     Route::post('/users-merge',     [UserMergeController::class, 'merge'])->name("merge");
+    Route::post('/users-bulk-merge', [UserMergeController::class, 'bulkMerge']);
 });
 Route::post('v1/admin/login-verify', [AuthController::class, 'adminLogin'])->name("adminLogin");
 Route::post('v1/admin/send-token', [AuthController::class, 'adminSendToken'])->name("adminSendToken");

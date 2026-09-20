@@ -79,10 +79,11 @@ class PublishScheduledProducts extends Command
     private function processProduct(Product $product): void
     {
         try {
-            $product->update([
-                'status' => 'published',
-                'created_at' => now(),
-            ]);
+            $product->forceFill([
+                'status'     => 'published',
+                'created_at' => $product->published_at ?? now(),
+            ])->save();
+
             $this->processedCount++;
             Log::channel('daily')->info(
                 "Product #{$product->id} published successfully"
