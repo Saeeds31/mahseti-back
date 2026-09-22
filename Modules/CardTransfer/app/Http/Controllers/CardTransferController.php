@@ -7,6 +7,7 @@ use App\Services\SmsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Modules\Addresses\Models\Address;
 use Modules\CardTransfer\Models\CardTransferReceipt;
 use Modules\Cart\Models\Cart;
@@ -250,68 +251,93 @@ class CardTransferController extends Controller
         $user = $request->user();
 
         $request->validate([
-            'image' => 'required|image|max:2048', // حداکثر 2 مگابایت
+            'image' => 'required|image|max:2048',
             'tracking_code' => 'nullable|string|max:50',
         ]);
 
         $order = Order::where('user_id', $user->id)
             ->where('id', $orderId)
-            ->where('status', 'card_transfer_pending')
+            ->whereIn('status', ['card_transfer_pending', 'card_transfer_send_again'])
             ->firstOrFail();
 
-        // بررسی اینکه قبلاً رسیدی آپلود نشده باشه
-        $existingReceipt = CardTransferReceipt::where('order_id', $order->id)->first();
-        if ($existingReceipt) {
+        // بررسی رسید قبلی
+        $existingReceipt = CardTransferReceipt::where('order_id', $order->id)->latest()->first();
+
+        // اگه رسید در حال بررسی یا تأیید شده وجود داره، اجازه نده
+        if ($existingReceipt && in_array($existingReceipt->status, ['pending', 'approved'])) {
             return response()->json([
                 'success' => false,
-                'message' => 'قبلاً رسیدی برای این سفارش آپلود شده است'
+                'message' => 'رسید این سفارش در حال بررسی یا تأیید شده است.'
             ], 422);
         }
 
-        // آپلود فایل
+        // آپلود فایل جدید
         $path = $request->file('image')->store('card-transfer-receipts', 'public');
 
-        // ایجاد رسید
-        $receipt = CardTransferReceipt::create([
-            'order_id' => $order->id,
-            'image_path' => $path,
-            'tracking_code' => $request->tracking_code,
-            'status' => 'pending',
-        ]);
+        if ($existingReceipt) {
+            // حذف فایل قدیمی (اختیاری ولی توصیه میشه)
+            if ($existingReceipt->image_path && Storage::disk('public')->exists($existingReceipt->image_path)) {
+                Storage::disk('public')->delete($existingReceipt->image_path);
+            }
+
+            // آپدیت همون رکورد
+            $existingReceipt->update([
+                'image_path'    => $path,
+                'tracking_code' => $request->tracking_code,
+                'status'        => 'pending',
+                'admin_id'      => null,
+                'description'   => null,
+            ]);
+
+            $receipt = $existingReceipt;
+        } else {
+            // ایجاد رسید جدید
+            $receipt = CardTransferReceipt::create([
+                'order_id'      => $order->id,
+                'image_path'    => $path,
+                'tracking_code' => $request->tracking_code,
+                'status'        => 'pending',
+            ]);
+        }
 
         // تغییر وضعیت سفارش
         $order->update([
             'status' => 'card_transfer_review'
         ]);
-        $this->smsService->sendToKavenegar('cardtocardcustomerreciept', $user->mobile, $order->id);
-        $this->smsService->sendToAdmins('cardtocardadminreciept', $order->id);
+
+        try {
+            $this->smsService->sendToKavenegar('cardtocardcustomerreciept', $user->mobile, $order->id);
+            $this->smsService->sendToAdmins('cardtocardadminreciept', $order->id);
+        } catch (\Throwable $e) {
+            Log::error('SMS sending failed for order ' . $order->id, [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+        }
+
         return response()->json([
             'success' => true,
-            'receipt' => $receipt,
+            'receipt' => $receipt->fresh(),
             'message' => 'رسید با موفقیت آپلود شد. در انتظار تأیید ادمین.'
         ], 200);
     }
 
-    /**
-     * بررسی رسید توسط ادمین (تأیید یا رد)
-     */
     public function reviewReceipt(Request $request, $receiptId)
     {
         $admin = $request->user();
         $request->validate([
-            'status' => 'required|in:approved,rejected',
+            'status' => 'required|in:approved,rejected,send_again',
             'description' => 'nullable|string|max:500',
         ]);
 
         $receipt = CardTransferReceipt::with('order')
-            ->where('status', 'pending')
             ->findOrFail($receiptId);
 
         return DB::transaction(function () use ($receipt, $request, $admin) {
-            // در صورت رد، موجودی را برگردان
             $user = $receipt->order->user;
+
+            // ---------- رد رسید ----------
             if ($request->status === 'rejected') {
-                // بازگردانی موجودی آیتم‌های سفارش
                 foreach ($receipt->order->items as $item) {
                     if ($item->variant) {
                         $item->variant->increment('stock', $item->quantity);
@@ -319,13 +345,11 @@ class CardTransferController extends Controller
                     }
                 }
 
-                // تغییر وضعیت سفارش به cancelled
                 $receipt->order->update([
                     'status' => 'cancelled',
                     'payment_status' => 'failed'
                 ]);
 
-                // بازگردانی کوپن
                 if ($receipt->order->coupon) {
                     try {
                         (new CouponService)->releaseCoupon(
@@ -336,16 +360,62 @@ class CardTransferController extends Controller
                         Log::error("Coupon release failed: " . $e->getMessage());
                     }
                 }
-                $this->smsService->sendToKavenegar('rejectcardtocardrecieptcustomer', $user->mobile, $receipt->order->id);
+
+                try {
+                    $this->smsService->sendToKavenegar(
+                        'rejectcardtocardrecieptcustomer',
+                        $user->mobile,
+                        $receipt->order->id
+                    );
+                } catch (\Throwable $e) {
+                    Log::error('SMS sending failed for order ' . $receipt->order->id, [
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                }
             }
 
-            // در صورت تأیید
+            // ---------- تأیید رسید ----------
             if ($request->status === 'approved') {
                 $receipt->order->update([
                     'status' => 'paid',
                     'payment_status' => 'paid'
                 ]);
-                $this->smsService->sendToKavenegar('approvedcardtocardrecieptcustomer', $user->mobile, $receipt->order->id);
+
+                try {
+                    $this->smsService->sendToKavenegar(
+                        'approvedcardtocardrecieptcustomer',
+                        $user->mobile,
+                        $receipt->order->id
+                    );
+                } catch (\Throwable $e) {
+                    Log::error('SMS sending failed for order ' . $receipt->order->id, [
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                }
+            }
+
+            // ---------- ارسال مجدد رسید ----------
+            if ($request->status === 'send_again') {
+                // سفارش همچنان pending می‌مونه، موجودی و کوپن دست‌نخورده
+                // فقط رسید فعلی بسته میشه تا کاربر بتونه رسید جدید آپلود کنه
+                $receipt->order->update([
+                    'status' => 'card_transfer_send_again',
+                ]);
+
+                try {
+                    $this->smsService->sendToKavenegar(
+                        'sendagianreceiptcustomer',
+                        $user->mobile,
+                        $receipt->order->id
+                    );
+                } catch (\Throwable $e) {
+                    Log::error('SMS sending failed for order ' . $receipt->order->id, [
+                        'error' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                    ]);
+                }
             }
 
             // بروزرسانی رسید
@@ -355,12 +425,16 @@ class CardTransferController extends Controller
                 'description' => $request->description,
             ]);
 
+            $messages = [
+                'approved'   => 'رسید تأیید شد',
+                'rejected'   => 'رسید رد شد',
+                'send_again' => 'درخواست ارسال مجدد رسید ثبت شد',
+            ];
+
             return response()->json([
                 'success' => true,
                 'receipt' => $receipt->fresh(['order']),
-                'message' => $request->status === 'approved'
-                    ? 'رسید تأیید شد'
-                    : 'رسید رد شد'
+                'message' => $messages[$request->status],
             ], 200);
         });
     }

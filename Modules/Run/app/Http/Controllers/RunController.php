@@ -59,6 +59,7 @@ class RunController extends Controller
             'coupon'   => 'کد تخفیف',
             'Menu'   => 'منو',
             'Pos'   => 'فروشگاه حضوری',
+            'CardToCard'   => 'کارت به کارت',
             'order'   => 'سفارش',
             'city'   => 'شهر',
             'province'   => 'استان',
