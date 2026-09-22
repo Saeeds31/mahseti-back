@@ -29,5 +29,6 @@
     "Notifications": true,
     "Payment": true,
     "Pos": true,
-    "StockAlerts": true
+    "StockAlerts": true,
+    "CardTransfer": true
 }

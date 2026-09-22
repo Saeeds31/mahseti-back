@@ -1115,18 +1115,10 @@ class OrdersController extends Controller
             'address.city',
             'shipping',
             'user',
-            'childOrders' => function ($query) {
-                $query->where('status', 'paid')->with([
-                    'items.product',
-                    'items.variant.values.attribute',
-                    'address.province',
-                    'address.city',
-                    'shipping',
-                    'user',
-                ]);
-            }
+            'cardTransferReceipt', // اضافه کردن رابطه رسید
+            'cardTransferReceipt.admin', // اطلاعات ادمین تایید کننده
         ])->where('id', $orderId)
-            ->where('user_id', $user->id) // فقط سفارش‌های خودش
+            ->where('user_id', $user->id)
             ->first();
 
         if (!$order) {
@@ -1135,8 +1127,37 @@ class OrdersController extends Controller
             ], 404);
         }
 
+        // اضافه کردن فیلدهای محاسباتی
+        $orderData = $order->toArray();
+
+        // اضافه کردن اطلاعات تکمیلی رسید
+        if ($order->cardTransferReceipt) {
+            $orderData['receipt'] = [
+                'id' => $order->cardTransferReceipt->id,
+                'image_url' => $order->cardTransferReceipt->image_path,
+                'tracking_code' => $order->cardTransferReceipt->tracking_code,
+                'status' => $order->cardTransferReceipt->status,
+                'status_label' => $order->cardTransferReceipt->status_label,
+                'description' => $order->cardTransferReceipt->description,
+                'admin_name' => $order->cardTransferReceipt->admin?->full_name ?? null,
+                'created_at' => $order->cardTransferReceipt->created_at,
+                'updated_at' => $order->cardTransferReceipt->updated_at,
+            ];
+        }
+
+        // اضافه کردن وضعیت‌های سفارش
+        $orderData['status_label'] = $order->status_label;
+        $orderData['payment_status_label'] = $order->payment_status_label;
+
+        // زمان باقی‌مونده برای آپلود رسید (فقط برای وضعیت card_transfer_pending)
+        if ($order->status === 'card_transfer_pending') {
+            $expiresAt = $order->created_at->addMinutes(15);
+            $orderData['receipt_expires_at'] = $expiresAt->toISOString();
+            $orderData['receipt_remaining_seconds'] = max(0, now()->diffInSeconds($expiresAt, false));
+        }
+
         return response()->json([
-            'order' => $order,
+            'order' => $orderData,
         ]);
     }
     public function getActiveReservations()

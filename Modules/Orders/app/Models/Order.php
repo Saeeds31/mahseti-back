@@ -8,6 +8,7 @@ use Modules\Addresses\Models\Address;
 use Modules\Users\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Modules\CardTransfer\Models\CardTransferReceipt;
 use Modules\Coupons\Models\Coupon;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Shipping\Models\Shipping;
@@ -62,6 +63,8 @@ class Order extends Model
             'cancelled' => 'لغو شده',
             'completed' => 'کامل شده',
             'returned' => 'مرجوع شده',
+            'card_transfer_pending' => 'در انتظار آپلود رسید',
+            'card_transfer_review' => 'در انتظار بررسی ادمین',
             'failed' => 'ناموفق',
         ];
 
@@ -99,6 +102,10 @@ class Order extends Model
         return $this->belongsTo(Shipping::class);
     }
 
+    public function cardTransferReceipt()
+    {
+        return $this->hasOne(CardTransferReceipt::class);
+    }
     public function items()
     {
         return $this->hasMany(OrderItem::class);
@@ -132,6 +139,18 @@ class Order extends Model
             }
         ]);
     }
+    public function getPaymentMethodLabelAttribute()
+    {
+        $methods = [
+            'online' => 'پرداخت اینترنتی',
+            'wallet' => 'کیف پول',
+            'card_transfer' => 'کارت به کارت',
+            'cod' => 'پرداخت در محل',
+        ];
+
+        return $methods[$this->payment_method] ?? $this->payment_method;
+    }
+
     public function scopeWithAllChildren($query)
     {
         return $query->with([

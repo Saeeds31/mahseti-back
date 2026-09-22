@@ -445,7 +445,7 @@ class ProductsController extends Controller
                 break;
         }
 
-        $products = $query->paginate(15);
+        $products = $query->paginate(18);
 
         return response()->json([
             'success' => true,

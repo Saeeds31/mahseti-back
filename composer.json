@@ -46,6 +46,7 @@
             "Modules\\Reports\\": "Modules/Reports/app/",
             "Modules\\StockAlerts\\": "Modules/StockAlerts/app/",
             "Modules\\Dashboard\\": "Modules/Dashboard/app/",
+            "Modules\\CardTransfer\\": "Modules/CardTransfer/app/",
             "Modules\\Categories\\": "Modules/Categories/app/",
             "Modules\\Attributes\\": "Modules/Attributes/app/",
             "Modules\\Articles\\": "Modules/Articles/app/",
