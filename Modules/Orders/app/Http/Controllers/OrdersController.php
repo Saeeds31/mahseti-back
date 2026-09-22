@@ -508,14 +508,9 @@ class OrdersController extends Controller
             'ids.*' => 'integer|exists:orders,id'
         ]);
 
-        $orders = Order::with([
-            'user',
-            'address.province',
-            'address.city',
-            'shipping',
-            'items.product',
-            'items.variant.values.attribute'
-        ])->whereIn('id', $request->ids)
+        // استفاده از اسکوپ withAllChildren به همراه whereIn
+        $orders = Order::withAllChildren()
+            ->whereIn('id', $request->ids)
             ->get();
 
         return response()->json([
