@@ -78,7 +78,7 @@ class UsersController extends Controller
             });
         }
 
-        $users = $query->paginate(20);
+        $users = $query->latest()->paginate(20);
 
         return response()->json($users);
     }

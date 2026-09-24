@@ -15,11 +15,36 @@ class WalletTransactionController extends Controller
     /**
      * لیست تراکنش‌های یک کیف پول
      */
-    public function index(Wallet $wallet)
+    public function index(Request $request, ?Wallet $wallet = null)
     {
-        $transactions = $wallet->transactions()->latest()->paginate(20);
+        $query = WalletTransaction::query()
+            ->with(['wallet.user'])
+            ->latest();
+
+        // اگر برای یک کیف پول خاص بود
+        if ($wallet) {
+            $query->where('wallet_id', $wallet->id);
+        }
+
+        // فیلتر جستجو بر اساس نام کاربر یا شماره تماس
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->whereHas('wallet.user', function ($q) use ($search) {
+                $q->where('full_name', 'like', "%{$search}%")
+                    ->orWhere('mobile', 'like', "%{$search}%");
+            });
+        }
+
+        // فیلتر بر اساس نوع (credit / debit)
+        if ($request->filled('type')) {
+            $query->where('type', $request->type);
+        }
+
+        $transactions = $query->paginate(20);
+
         return response()->json($transactions);
     }
+
 
     /**
      * ایجاد تراکنش (شارژ یا برداشت)

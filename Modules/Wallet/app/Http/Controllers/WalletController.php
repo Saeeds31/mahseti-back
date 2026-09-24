@@ -33,7 +33,7 @@ class WalletController extends Controller
                 $query->orWhere('mobile', 'like', "%{$userName}%");
             });
         }
-        $wallets = $walletsQuery->paginate(20);
+        $wallets = $walletsQuery->latest()->paginate(20);
 
         return response()->json($wallets);
     }
