@@ -266,11 +266,11 @@ class ShippingController extends Controller
         if ($reservationOrder && $reservationShippingId) {
             // ابتدا روش حمل سفارش رزرو رو چک کن
             $shipping = Shipping::with('conditions')->find($reservationShippingId);
-
+            $newTotal=$reservationOrder->subtotal+$subTotal;
             if ($shipping) {
                 $address = $reservationOrder->address;
                 // بررسی کن که آیا این روش با شرایط فعلی (سبد خرید جدید + آدرس) معتبر هست یا نه
-                $isValid = $this->shippingService->checkShippingValidity($shipping, $subTotal, $quantity, $address, $request);
+                $isValid = $this->shippingService->checkShippingValidity($shipping, $newTotal, $quantity, $address, $request);
 
                 if ($isValid) {
                     // معتبر هست => فقط همین یک روش رو برگردون
