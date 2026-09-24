@@ -69,7 +69,7 @@ class WalletTransactionController extends Controller
                 $smsService->sendToKavenegar('increasewallet', $wallet->user->mobile, $data['amount'], ['token20' => $wallet->user->getDisplayName(null)]);
             } else {
                 $wallet->decrement('balance', $data['amount']);
-                $smsService->sendToKavenegar('decreasewallet', $wallet->user->mobile, $data['amount'], ['token20' => $wallet->user->getDisplayName(null), 'token2' => $transaction->description]);
+                // $smsService->sendToKavenegar('decreasewallet', $wallet->user->mobile, $data['amount'], ['token20' => $transaction->description]);
             }
 
             return response()->json([
