@@ -120,6 +120,30 @@ class Order extends Model
     {
         return $this->hasMany(Order::class, 'parent_order_id');
     }
+    public function getTotalSubtotalWithPaidChildrenAttribute()
+    {
+        $total = (int) $this->subtotal;
+
+        $paidChildrenSubtotal = $this->childOrders
+            ->where('status', 'paid')
+            ->sum('subtotal');
+
+        return $total + (int) $paidChildrenSubtotal;
+    }
+
+    /**
+     * مجموع quantity این سفارش + فقط فرزندان paid
+     */
+    public function getTotalQuantityWithPaidChildrenAttribute()
+    {
+        $quantity = (int) $this->items->sum('quantity');
+
+        $paidChildrenQuantity = $this->childOrders
+            ->where('status', 'paid')
+            ->sum(fn($child) => $child->items->sum('quantity'));
+
+        return $quantity + (int) $paidChildrenQuantity;
+    }
     // در مدل Order
     public function scopeParentOrders($query)
     {

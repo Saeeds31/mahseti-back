@@ -245,18 +245,26 @@ class ShippingController extends Controller
         $reservationOrder = null;
         $reservationShippingId = null;
         $reservationShippingCost = 0;
-
+        $reservationTotal = 0;
+        $reservationQuantity = 0;
         if ($reservationOrderId) {
             $reservationOrder = Order::where('id', $reservationOrderId)
                 ->where('user_id', $user->id)
                 ->where('status', 'reserved')
                 ->where('reserved_until', '>', now())
-                ->with(['shipping'])
+                ->with([
+                    'shipping',
+                    'address',
+                    'items',
+                    'childOrders' => fn($q) => $q->where('status', 'paid')->with('items'),
+                ])
                 ->first();
 
             if ($reservationOrder) {
                 $reservationShippingId = $reservationOrder->shipping_id;
                 $reservationShippingCost = (int) $reservationOrder->shipping_cost;
+                $reservationTotal    = $reservationOrder->total_subtotal_with_paid_children;
+                $reservationQuantity = $reservationOrder->total_quantity_with_paid_children;
             }
         }
 
@@ -266,11 +274,18 @@ class ShippingController extends Controller
         if ($reservationOrder && $reservationShippingId) {
             // ابتدا روش حمل سفارش رزرو رو چک کن
             $shipping = Shipping::with('conditions')->find($reservationShippingId);
-            $newTotal=$reservationOrder->subtotal+$subTotal;
+            $newTotal    = $reservationTotal + (int) $subTotal;
+            $newQuantity = $reservationQuantity + (int) $quantity;
             if ($shipping) {
                 $address = $reservationOrder->address;
                 // بررسی کن که آیا این روش با شرایط فعلی (سبد خرید جدید + آدرس) معتبر هست یا نه
-                $isValid = $this->shippingService->checkShippingValidity($shipping, $newTotal, $quantity, $address, $request);
+                $isValid = $this->shippingService->checkShippingValidity(
+                    $shipping,
+                    $newTotal,
+                    $newQuantity,
+                    $address,
+                    $request
+                );
 
                 if ($isValid) {
                     // معتبر هست => فقط همین یک روش رو برگردون
@@ -297,7 +312,10 @@ class ShippingController extends Controller
             // =====================================================
             // 5) اگر روش رزرو معتبر نبود => برو سراغ سایر روش‌ها با محاسبه تفاوت
             // =====================================================
-            $shippings = Shipping::with('conditions')->where('status', 1)->get();
+            $shippings = Shipping::with('conditions')
+                ->where('status', 1)
+                ->when($reservationShippingId, fn($q) => $q->where('id', '!=', $reservationShippingId))
+                ->get();
             $available = [];
 
             foreach ($shippings as $shipping) {
