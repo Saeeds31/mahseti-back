@@ -27,21 +27,13 @@ class PublishScheduledProducts extends Command
                 ->where('status', 'draft')
                 ->whereNotNull('published_at')
                 ->where('published_at', '<=', now());
-
-            $totalProducts = $productsQuery->count();
-
-            Log::channel('daily')->info(
-                "Found {$totalProducts} products scheduled for publishing"
-            );
-
-            if ($totalProducts === 0) {
+            if (!$productsQuery->exists()) {
                 $this->info('No products to publish.');
-
                 return self::SUCCESS;
             }
 
-            $productsQuery->chunkById(
-                100,
+            $productsQuery->select(['id', 'status', 'published_at'])->chunkById(
+                50,
                 function ($products) {
                     foreach ($products as $product) {
                         $this->processProduct($product);
