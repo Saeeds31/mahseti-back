@@ -3,6 +3,7 @@
 namespace Modules\Front\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Support\CacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -141,17 +142,29 @@ class FrontController extends Controller
         $user = Auth::guard('sanctum')->user();
         $data['user'] = $user ??  null;
         // settings
-        $data['settings'] = Setting::all()
-            ->groupBy('group')
-            ->map(function ($group) {
-                return $group->mapWithKeys(function ($setting) {
-                    return [$setting->key => $setting->value];
-                })->toArray();
-            });
+        $data['settings'] = CacheService::remember(
+            CacheService::BASE_SETTINGS,
+            CacheService::TTL_ONE_MONTH,
+            function () {
+                return Setting::all()
+                    ->groupBy('group')
+                    ->map(function ($group) {
+                        return $group->mapWithKeys(function ($setting) {
+                            return [$setting->key => $setting->value];
+                        })->toArray();
+                    });
+            }
+        );
         // menus
-        $data['menus'] = Menu::with('children')
-            ->whereNull('parent_id')
-            ->get();
+        $data['menus'] = CacheService::remember(
+            CacheService::BASE_MENUS,
+            CacheService::TTL_ONE_MONTH,
+            function () {
+                return Menu::with('children')
+                    ->whereNull('parent_id')
+                    ->get();
+            }
+        );
         return response()->json([
             'success' => true,
             'message' => 'home data successfully',

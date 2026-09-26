@@ -4,17 +4,28 @@ namespace Modules\Menus\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-// use Modules\Menus\Database\Factories\MenuFactory;
+use App\Support\CacheService;
 
 class Menu extends Model
 {
     use HasFactory;
+
     protected $fillable = [
         'title',
         'link',
         'parent_id',
         'icon',
     ];
+
+    protected static function booted()
+    {
+        $clearCache = fn () => CacheService::forgetMenus();
+
+        static::saved($clearCache);
+        static::deleted($clearCache);
+    }
+
+    // ==================== Relations ====================
 
     public function parent()
     {
@@ -23,6 +34,7 @@ class Menu extends Model
 
     public function children()
     {
-        return $this->hasMany(self::class, 'parent_id');
+        return $this->hasMany(Menu::class, 'parent_id');
     }
+  
 }
