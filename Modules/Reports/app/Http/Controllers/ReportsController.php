@@ -1430,9 +1430,7 @@ class ReportsController extends Controller
         return [
             ['value' => 'pending', 'label' => 'در انتظار'],
             ['value' => 'reserved', 'label' => 'رزرو شده'],
-            ['value' => 'processing', 'label' => 'در حال پردازش'],
             ['value' => 'paid', 'label' => 'پرداخت شده'],
-            ['value' => 'shipped', 'label' => 'ارسال شده'],
             ['value' => 'completed', 'label' => 'تکمیل شده'],
             ['value' => 'canceled', 'label' => 'لغو شده'],
             ['value' => 'returned', 'label' => 'مرجوعی'],

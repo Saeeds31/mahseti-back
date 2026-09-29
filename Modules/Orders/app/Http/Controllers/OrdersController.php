@@ -551,6 +551,9 @@ class OrdersController extends Controller
                     });
             });
         }
+        if ($request->filled('shipping_id')) {
+            $query->where('shipping_id', $request->shipping_id);
+        }
 
         $orders = $query->orderByDesc('created_at')->orderByDesc('id')->get();
 
