@@ -2,6 +2,7 @@
 
 namespace Modules\Products\Models;
 
+use App\Support\CacheService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -113,14 +114,16 @@ class ProductVariant extends Model
     /**
      * پاک کردن کش هنگام آپدیت مدل
      */
+
     protected static function booted()
     {
-        static::saved(function ($variant) {
+        $clearCache = function ($variant) {
             Cache::forget("variant_final_price_{$variant->id}");
-        });
+            CacheService::forgetProducts();
+            CacheService::forget("product_detail_{$variant->product_id}");
+        };
 
-        static::deleted(function ($variant) {
-            Cache::forget("variant_final_price_{$variant->id}");
-        });
+        static::saved($clearCache);
+        static::deleted($clearCache);
     }
 }

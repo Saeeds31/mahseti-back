@@ -2,6 +2,7 @@
 
 namespace Modules\Categories\Models;
 
+use App\Support\CacheService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 // use Modules\Categories\Database\Factories\CategoryFactory;
@@ -34,5 +35,11 @@ class Category extends Model
     public function allChildren()
     {
         return $this->children()->with('allChildren');
+    }
+    protected static function booted()
+    {
+        $clearCache = fn() => CacheService::forgetCategories();
+        static::saved($clearCache);
+        static::deleted($clearCache);
     }
 }

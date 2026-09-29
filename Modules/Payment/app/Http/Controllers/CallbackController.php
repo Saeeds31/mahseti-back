@@ -5,6 +5,7 @@ namespace Modules\Payment\Http\Controllers;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Modules\Cart\Models\Cart;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Orders\Models\Order;
 use Modules\Payment\Services\PaymentVerifier;
@@ -107,7 +108,10 @@ class CallbackController extends Controller
                 transaction: $result['transaction'],
                 verify: $result['verify'],
             );
-
+            if ($result['transaction']->payable instanceof Order) {
+                $order = $result['transaction']->payable;
+                Cart::where('user_id', $order->user_id)->delete();
+            }
             $transaction = $result['transaction'];
             $payable = $transaction->payable;
 

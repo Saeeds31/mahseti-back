@@ -788,7 +788,6 @@ class OrdersController extends Controller
                     'quantity' => $item->quantity,
                     'price' => $item->price_final,
                 ]);
-
                 // ★ کم کردن موجودی از روی مدل قفل شده
                 $variant->decrement('stock', $item->quantity);
 
@@ -821,10 +820,10 @@ class OrdersController extends Controller
             }
 
             // ================================================================
-            // مرحله 7: پاک کردن سبد خرید
+            // مرحله 7: پاک کردن سبد خرید اگر پرداخت کلا از کیف پول بوده
             // ================================================================
-
-            Cart::where('user_id', $user->id)->delete();
+            if ($toPayOnline === 0)
+                Cart::where('user_id', $user->id)->delete();
 
             // ================================================================
             // مرحله 8: پرداخت آنلاین (اگر نیاز باشد)
@@ -1045,6 +1044,7 @@ class OrdersController extends Controller
             ],
 
             'address' => $address,
+            'wallet' => $user->wallet,
             'shipping_method' => [
                 'id' => $shipping->id,
                 'name' => $shipping->title,

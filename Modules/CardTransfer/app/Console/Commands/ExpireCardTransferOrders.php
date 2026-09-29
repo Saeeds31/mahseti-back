@@ -161,9 +161,9 @@ class ExpireCardTransferOrders extends Command
                     }
                 }
 
-                // تغییر وضعیت سفارش به cancelled
+                // تغییر وضعیت سفارش به failed
                 $lockedOrder->update([
-                    'status' => 'cancelled',
+                    'status' => 'failed',
                     'payment_status' => 'failed',
                 ]);
 

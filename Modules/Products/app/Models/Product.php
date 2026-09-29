@@ -2,6 +2,7 @@
 
 namespace Modules\Products\Models;
 
+use App\Support\CacheService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Support\Carbon;
@@ -201,15 +202,17 @@ class Product extends Model
         // اگر تخفیف نامحدود یا بدون تاریخ پایان هست، ۱ ساعت کش کن
         return 3600;
     }
+
     protected static function booted()
     {
-        static::saved(function ($product) {
+        $clearCache = function ($product) {
             Cache::forget("product_final_price_{$product->id}");
-        });
+            CacheService::forgetProducts();
+            CacheService::forget("product_detail_{$product->id}");
+        };
 
-        static::deleted(function ($product) {
-            Cache::forget("product_final_price_{$product->id}");
-        });
+        static::saved($clearCache);
+        static::deleted($clearCache);
     }
     public static function dashboardReport($startDate = null, $endDate = null)
     {
@@ -550,7 +553,7 @@ class Product extends Model
             ->limit($limit)
             ->get();
     }
-    public static function latestProducts($limit =12)
+    public static function latestProducts($limit = 12)
     {
         return self::where('status', "published") // فقط فعال‌ها
             ->whereIn('sales_channel', ['online_only', 'both'])

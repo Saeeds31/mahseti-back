@@ -3,6 +3,7 @@
 namespace Modules\Articles\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Support\CacheService;
 use Illuminate\Http\Request;
 use Modules\Articles\Models\Article;
 use Modules\Articles\Http\Requests\ArticleStoreRequest;
@@ -12,12 +13,19 @@ use Modules\Notifications\Services\NotificationService;
 
 class ArticlesController extends Controller
 {
+
     public function frontArticles(Request $request)
     {
         $perPage = $request->get('per_page', 20);
+        $page = $request->get('page', 1);
 
-        $articles = Article::with('categories', 'author')
-            ->paginate($perPage);
+        $articles = CacheService::rememberWithTags(
+            [CacheService::TAG_BLOGS],
+            "front_articles_page_{$page}_per_{$perPage}",
+            CacheService::TTL_ONE_DAY,
+            fn() => Article::with('categories', 'author')
+                ->paginate($perPage)
+        );
 
         return response()->json([
             'success' => true,
@@ -27,36 +35,47 @@ class ArticlesController extends Controller
     }
     public function frontArticle($id)
     {
-        // مقاله اصلی
-        $article = Article::with('categories', 'author', 'comments')->find($id);
+        // اول existence چک می‌شه (خارج از کش)
+        $exists = Article::where('id', $id)->exists();
 
-        if (!$article) {
+        if (!$exists) {
             return response()->json([
                 'success' => false,
                 'message' => 'مقاله پیدا نشد',
             ], 404);
         }
 
-        $categoryIds = $article->categories->pluck('id');
-        $relatedArticles = collect();
-        if ($categoryIds->isNotEmpty()) {
-            $relatedArticles = Article::with('author')
-                ->whereHas('categories', function ($q) use ($categoryIds) {
-                    $q->whereIn('categories.id', $categoryIds);
-                })
-                ->where('id', '!=', $article->id)
-                ->latest('created_at')
-                ->take(10)
-                ->get();
-        }
+        $data = CacheService::rememberWithTags(
+            [CacheService::TAG_BLOGS],
+            "front_article_{$id}",
+            CacheService::TTL_ONE_DAY,
+            function () use ($id) {
+                $article = Article::with('categories', 'author', 'comments')->find($id);
+                $categoryIds = $article->categories->pluck('id');
+
+                $related = collect();
+                if ($categoryIds->isNotEmpty()) {
+                    $related = Article::with('author')
+                        ->whereHas('categories', function ($q) use ($categoryIds) {
+                            $q->whereIn('categories.id', $categoryIds);
+                        })
+                        ->where('id', '!=', $article->id)
+                        ->latest('created_at')
+                        ->take(10)
+                        ->get();
+                }
+
+                return [
+                    'article' => $article,
+                    'related' => $related,
+                ];
+            }
+        );
 
         return response()->json([
             'success' => true,
             'message' => 'جزئیات مقاله',
-            'data'    => [
-                'article' => $article,
-                'related' => $relatedArticles
-            ]
+            'data'    => $data
         ]);
     }
 

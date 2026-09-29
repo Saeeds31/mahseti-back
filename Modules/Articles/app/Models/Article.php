@@ -2,6 +2,7 @@
 
 namespace Modules\Articles\Models;
 
+use App\Support\CacheService;
 use Illuminate\Database\Eloquent\Model;
 use  Illuminate\Database\Eloquent\Factories\HasFactory;
 use Modules\ArticleCategories\Models\ArticleCategory;
@@ -25,7 +26,12 @@ class Article extends Model
         'read_time',
         'author_id'
     ];
-
+    protected static function booted()
+    {
+        $clearCache = fn() => CacheService::forgetBlogs();
+        static::saved($clearCache);
+        static::deleted($clearCache);
+    }
     public function categories()
     {
         return $this->belongsToMany(ArticleCategory::class, 'article_article_category', 'article_id', 'article_category_id');

@@ -2,6 +2,7 @@
 
 namespace Modules\Banners\Models;
 
+use App\Support\CacheService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 // use Modules\Banners\Database\Factories\BannerFactory;
@@ -19,7 +20,12 @@ class Banner extends Model
         'ratio',
         'status',
     ];
-
+    protected static function booted()
+    {
+        $clearCache = fn() => CacheService::forgetBanners();
+        static::saved($clearCache);
+        static::deleted($clearCache);
+    }
     protected $casts = [
         'status' => 'boolean',
     ];

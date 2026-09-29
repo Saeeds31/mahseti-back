@@ -3,6 +3,7 @@
 namespace Modules\Products\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Support\CacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Modules\Notifications\Services\NotificationService;
@@ -198,7 +199,6 @@ class ProductsController extends Controller
             'stock'    => $product->stock ?? 0,
             'wp_added' => false,
         ]);
-        
     }
     // آپدیت محصول
     public function update(ProductUpdateRequest $request, Product $product, NotificationService $notifications)
@@ -363,8 +363,59 @@ class ProductsController extends Controller
 
     public function frontIndex(Request $request)
     {
+        $shouldCache = $this->shouldCacheProductsList($request);
+
+        if ($shouldCache) {
+            $cacheKey = $this->buildProductsCacheKey($request);
+
+            $products = CacheService::rememberWithTags(
+                [CacheService::TAG_PRODUCTS],
+                $cacheKey,
+                CacheService::TTL_ONE_HOUR,
+                fn() => $this->buildProductsQuery($request)->paginate(18)
+            );
+        } else {
+            // کش نمی‌شه
+            $products = $this->buildProductsQuery($request)->paginate(18);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'لیست محصولات',
+            'data'    => $products,
+        ]);
+    }
+    private function shouldCacheProductsList(Request $request): bool
+    {
+        if ($request->filled('search'))           return false;
+        if ($request->filled('attribute_values')) return false;
+        if ($request->filled('min_price'))        return false;
+        if ($request->filled('max_price'))        return false;
+        if ($request->filled('in_stock'))         return false;
+        return true;
+    }
+    private function buildProductsCacheKey(Request $request): string
+    {
+        $params = [
+            'category_ids' => null,
+            'sort'         => $request->get('sort', 'newest'),
+            'page'         => (int) $request->get('page', 1),
+        ];
+
+        if ($request->filled('category_ids')) {
+            $ids = explode(',', $request->category_ids);
+            sort($ids); // یکدست‌سازی ترتیب
+            $params['category_ids'] = implode(',', $ids);
+        }
+
+        ksort($params);
+
+        return 'products_list_' . md5(json_encode($params));
+    }
+    private function buildProductsQuery(Request $request)
+    {
         $query = Product::with(['categories', 'variants.values.attribute'])
-            ->where('status', '!=', "draft")
+            ->where('status', '!=', 'draft')
             ->where('price', '>', 0);
 
         if ($search = $request->get('search')) {
@@ -391,46 +442,33 @@ class ProductsController extends Controller
         if ($minPrice = $request->get('min_price')) {
             $query->where(function ($q) use ($minPrice) {
                 $q->where('price', '>=', $minPrice)
-                    ->orWhereHas('variants', function ($v) use ($minPrice) {
-                        $v->where('price', '>=', $minPrice);
-                    });
+                    ->orWhereHas('variants', fn($v) => $v->where('price', '>=', $minPrice));
             });
         }
 
         if ($maxPrice = $request->get('max_price')) {
             $query->where(function ($q) use ($maxPrice) {
                 $q->where('price', '<=', $maxPrice)
-                    ->orWhereHas('variants', function ($v) use ($maxPrice) {
-                        $v->where('price', '<=', $maxPrice);
-                    });
+                    ->orWhereHas('variants', fn($v) => $v->where('price', '<=', $maxPrice));
             });
         }
 
-        // ─── وضعیت موجودی ───
-        $inStockFilter = $request->get('in_stock');
-        $onlyInStock = ($inStockFilter == 1);
-
+        $onlyInStock = ($request->get('in_stock') == 1);
         if ($onlyInStock) {
-            // فقط موجودها (published) — ناموجودها کلاً حذف
             $query->where('status', 'published');
         } else {
-            // ناموجودها (unpublished) برن آخر لیست — این باید اولین ORDER BY باشه
             $query->orderByRaw("
             CASE
                 WHEN status = 'published' THEN 0
-            ELSE 1
+                ELSE 1
             END ASC
         ");
         }
 
-        // ─── مرتب‌سازی اصلی (داخل هر گروه) ───
-        $sort = $request->get('sort');
-
-        switch ($sort) {
+        switch ($request->get('sort')) {
             case 'cheapest':
                 $query->orderBy('price', 'ASC');
                 break;
-
             case 'expensive':
                 $query->orderBy('price', 'DESC');
                 break;
@@ -438,25 +476,43 @@ class ProductsController extends Controller
                 $query->withSum('orderItems as total_sold', 'quantity')
                     ->orderByDesc('total_sold');
                 break;
-
             case 'newest':
             default:
                 $query->orderBy('created_at', 'desc');
                 break;
         }
 
-        $products = $query->paginate(18);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'لیست محصولات',
-            'data'    => $products,
-        ]);
+        return $query;
     }
     public function frontDetail(Request $request, $id)
     {
         $user = $request->user();
 
+        $cached = CacheService::remember(
+            "product_detail_{$id}",
+            CacheService::TTL_ONE_DAY,
+            fn() => $this->buildProductDetailPayload($id)
+        );
+
+        $isInWishList = false;
+        if ($user) {
+            $isInWishList = Wishlist::where('user_id', $user->id)
+                ->where('product_id', $id)
+                ->exists();
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => array_merge($cached, [
+                'wishlist' => $isInWishList,
+            ]),
+        ]);
+    }
+    /**
+     * ساخت payload کش‌پذیر جزئیات محصول
+     */
+    private function buildProductDetailPayload($id): array
+    {
         $product = Product::with([
             'categories:id,title',
             'images:id,product_id,path',
@@ -514,7 +570,7 @@ class ProductsController extends Controller
             $attributes[] = $attributesById[$aid];
         }
 
-        // --- ساخت nested_map تو در تو بر اساس ترتیب attributeOrder ---
+        // --- ساخت nested_map تو در تو ---
         $nestedMap = [];
         foreach ($variants as $variant) {
             $valueData = $variant->values->map(function ($v) {
@@ -524,12 +580,10 @@ class ProductsController extends Controller
                 ];
             })->toArray();
 
-            // اگر variant هیچ value ندارد، کلاً رد شو
             if (empty($valueData)) {
                 continue;
             }
 
-            // مرتب‌سازی بر اساس attributeOrder
             usort($valueData, function ($a, $b) use ($attributeOrder) {
                 $posA = array_search($a['attribute_id'], $attributeOrder);
                 $posB = array_search($b['attribute_id'], $attributeOrder);
@@ -554,7 +608,6 @@ class ProductsController extends Controller
                 })->values()
             ];
 
-            // recursive insert در nested_map
             $ref = &$nestedMap;
             foreach ($valueIds as $vid) {
                 if (!isset($ref[$vid])) $ref[$vid] = [];
@@ -564,57 +617,45 @@ class ProductsController extends Controller
             unset($ref);
         }
 
-        if ($user) {
-            $isInWishList = Wishlist::where('user_id', $user->id)
-                ->where('product_id', $product->id)
-                ->exists();
-        } else {
-            $isInWishList = false;
-        }
-
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'wishlist' => $isInWishList,
-                'specifications' => $specs,
-                'product' => [
-                    'id' => $product->id,
-                    'title' => $product->title,
-                    'video' => $product->video,
-                    'images' => $product->images,
-                    'status' => $product->status,
-                    'description' => $product->description,
-                    'price' => $product->price,
-                    'final_price' => $product->final_price,
-                    'main_image' => $product->main_image,
-                ],
-                'attributes_order' => $attributeOrder,
-                'attributes' => $attributes,
-                'nested_map' => $nestedMap,
-                'variants' => $variants->map(function ($variant) {
-                    return [
-                        'id' => $variant->id,
-                        'sku' => $variant->sku,
-                        'price' => $variant->price,
-                        'stock' => $variant->stock,
-                        'discount_start_at' => $variant->discount_start_at,
-                        'discount_end_at' => $variant->discount_end_at,
-                        'discount_value' => $variant->discount_value,
-                        'discount_type' => $variant->discount_type,
-                        'final_price' => $variant->final_price,
-                        'is_available' => $variant->stock > 0,
-                        'values' => $variant->values->map(function ($v) {
-                            return [
-                                'id' => $v->id,
-                                'attribute_id' => $v->attribute->id,
-                                'attribute' => $v->attribute->name,
-                                'value' => $v->value
-                            ];
-                        })->values()
-                    ];
-                })->values()
-            ]
-        ]);
+        return [
+            'specifications' => $specs,
+            'product' => [
+                'id' => $product->id,
+                'title' => $product->title,
+                'video' => $product->video,
+                'images' => $product->images,
+                'status' => $product->status,
+                'description' => $product->description,
+                'price' => $product->price,
+                'final_price' => $product->final_price,
+                'main_image' => $product->main_image,
+            ],
+            'attributes_order' => $attributeOrder,
+            'attributes' => $attributes,
+            'nested_map' => $nestedMap,
+            'variants' => $variants->map(function ($variant) {
+                return [
+                    'id' => $variant->id,
+                    'sku' => $variant->sku,
+                    'price' => $variant->price,
+                    'stock' => $variant->stock,
+                    'discount_start_at' => $variant->discount_start_at,
+                    'discount_end_at' => $variant->discount_end_at,
+                    'discount_value' => $variant->discount_value,
+                    'discount_type' => $variant->discount_type,
+                    'final_price' => $variant->final_price,
+                    'is_available' => $variant->stock > 0,
+                    'values' => $variant->values->map(function ($v) {
+                        return [
+                            'id' => $v->id,
+                            'attribute_id' => $v->attribute->id,
+                            'attribute' => $v->attribute->name,
+                            'value' => $v->value
+                        ];
+                    })->values()
+                ];
+            })->values(),
+        ];
     }
     public function similar($id)
     {

@@ -1028,7 +1028,7 @@ class ReportsController extends Controller
     {
         $filters = $request->all();
 
-        // کوئری پایه سفارشات
+        // ============ کوئری پایه سفارشات ============
         $query = Order::query()
             ->with([
                 'user',
@@ -1038,147 +1038,60 @@ class ReportsController extends Controller
                 'shipping',
                 'items.product',
                 'items.variant.values.attribute',
-                'coupon'
+                'coupon',
             ]);
 
-        // ============ فیلترهای پایه ============
-
-        // فیلتر تاریخ شروع
-        if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
-        }
-
-        // فیلتر تاریخ پایان
-        if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
-        }
-
-        // فیلتر وضعیت سفارش
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        // فیلتر وضعیت پرداخت
-        if ($request->filled('payment_status')) {
-            $query->where('payment_status', $request->payment_status);
-        }
-
-        // فیلتر روش پرداخت
-        if ($request->filled('payment_method')) {
-            $query->where('payment_method', $request->payment_method);
-        }
-
-        // ============ فیلترهای پیشرفته ============
-
-        // فیلتر بر اساس استان (از طریق آدرس)
-        if ($request->filled('province')) {
-            $query->whereHas('address.province', function ($q) use ($request) {
-                $q->where('name', 'like', "%{$request->province}%");
-            });
-        }
-
-        // فیلتر بر اساس شهر (از طریق آدرس)
-        if ($request->filled('city')) {
-            $query->whereHas('address.city', function ($q) use ($request) {
-                $q->where('name', 'like', "%{$request->city}%");
-            });
-        }
-
-        // فیلتر بر اساس روش حمل و نقل
-        if ($request->filled('shipping_method_id')) {
-            $query->where('shipping_id', $request->shipping_method_id);
-        }
-
-        // فیلتر بر اساس کاربر
-        if ($request->filled('user_id')) {
-            $query->where('user_id', $request->user_id);
-        }
-
-        // فیلتر بر اساس بازه قیمت
-        if ($request->filled('min_total')) {
-            $query->where('total', '>=', $request->min_total);
-        }
-        if ($request->filled('max_total')) {
-            $query->where('total', '<=', $request->max_total);
-        }
-
-        // فیلتر بر اساس وجود کد تخفیف
-        if ($request->filled('has_coupon')) {
-            if ($request->has_coupon) {
-                $query->whereNotNull('coupon_id');
-            } else {
-                $query->whereNull('coupon_id');
-            }
-        }
-
-        // فیلتر بر اساس مقدار تخفیف
-        if ($request->filled('min_discount')) {
-            $query->where('discount_amount', '>=', $request->min_discount);
-        }
-        if ($request->filled('max_discount')) {
-            $query->where('discount_amount', '<=', $request->max_discount);
-        }
+        // اعمال فیلترها
+        $this->applyOrderFilters($query, $filters);
 
         // ============ مرتب‌سازی ============
         $sortBy = $request->filled('sort_by') ? $request->sort_by : 'created_at';
         $sortOrder = $request->filled('sort_order') ? $request->sort_order : 'desc';
 
         $validSortFields = ['id', 'total', 'created_at', 'status', 'payment_status', 'discount_amount'];
-        if (in_array($sortBy, $validSortFields)) {
-            $query->orderBy($sortBy, $sortOrder);
+        if (in_array($sortBy, $validSortFields, true)) {
+            $query->orderBy("orders.{$sortBy}", $sortOrder);
         } else {
-            $query->orderBy('created_at', 'desc');
+            $query->orderBy('orders.created_at', 'desc');
         }
 
         // ============ دریافت داده‌ها ============
-        $perPage = $request->filled('per_page') ? $request->per_page : 20;
+        $perPage = $request->filled('per_page') ? (int) $request->per_page : 20;
         $orders = $query->paginate($perPage);
 
         // ============ داده‌های نمودار ============
-
-        // 1. نمودار فروش روزانه
-        $dailySalesChart = $this->getOrderDailyChart($filters);
-
-        // 2. نمودار فروش به تفکیک وضعیت
-        $statusChart = $this->getOrderStatusChart($filters);
-
-        // 3. نمودار فروش به تفکیک روش پرداخت
-        $paymentMethodChart = $this->getOrderPaymentMethodChart($filters);
-
-        // 4. نمودار فروش به تفکیک استان‌ها
-        $provinceChart = $this->getOrderProvinceChart($filters);
-
-        // 5. نمودار فروش به تفکیک روش حمل و نقل
-        $shippingChart = $this->getOrderShippingChart($filters);
-
-        // 6. نمودار فروش ماهانه
-        $monthlyChart = $this->getOrderMonthlyChart($filters);
+        $dailySalesChart     = $this->getOrderDailyChart($filters);
+        $statusChart         = $this->getOrderStatusChart($filters);
+        $paymentMethodChart  = $this->getOrderPaymentMethodChart($filters);
+        $provinceChart       = $this->getOrderProvinceChart($filters);
+        $shippingChart       = $this->getOrderShippingChart($filters);
+        $monthlyChart        = $this->getOrderMonthlyChart($filters);
 
         // ============ خلاصه آماری ============
         $summary = $this->getOrderSummary($filters);
 
-        // ============ اطلاعات اضافی برای فیلترها ============
+        // ============ اطلاعات فیلترها ============
         $filterOptions = [
-            'statuses' => $this->getOrderStatuses(),
-            'payment_methods' => $this->getPaymentMethods(),
+            'statuses'         => $this->getOrderStatuses(),
+            'payment_methods'  => $this->getPaymentMethods(),
             'payment_statuses' => $this->getPaymentStatuses(),
-            'provinces' => $this->getProvinces(),
+            'provinces'        => $this->getProvinces(),
             'shipping_methods' => $this->getShippingMethods(),
         ];
 
         return response()->json([
-            'data' => $orders,
-            'summary' => $summary,
-            'charts' => [
-                'daily_sales' => $dailySalesChart,
-                'monthly_sales' => $monthlyChart,
-                'status' => $statusChart,
+            'data'           => $orders,
+            'summary'        => $summary,
+            'charts'         => [
+                'daily_sales'    => $dailySalesChart,
+                'monthly_sales'  => $monthlyChart,
+                'status'         => $statusChart,
                 'payment_method' => $paymentMethodChart,
-                'province' => $provinceChart,
-                'shipping' => $shippingChart,
+                'province'       => $provinceChart,
+                'shipping'       => $shippingChart,
             ],
             'filter_options' => $filterOptions,
-            'filters' => $filters,
+            'filters'        => $filters,
         ]);
     }
 
@@ -1188,21 +1101,37 @@ class ReportsController extends Controller
      */
     private function getOrderSummary($filters)
     {
-        $query = $this->buildOrderQuery($filters);
+        // یک کوئری تجمیعی برای همه‌ی اعداد
+        $aggregates = $this->buildOrderQuery($filters)
+            ->selectRaw('
+            COUNT(*) as total_orders,
+            COALESCE(SUM(orders.total), 0) as total_revenue,
+            COALESCE(SUM(orders.discount_amount), 0) as total_discount,
+            COALESCE(AVG(orders.total), 0) as average_order_value,
+            COALESCE(MAX(orders.total), 0) as max_order_value,
+            COALESCE(MIN(orders.total), 0) as min_order_value
+        ')
+            ->first();
+
+        // تعداد کل اقلام
+        $totalItems = OrderItem::whereHas('order', function ($q) use ($filters) {
+            $this->applyOrderFilters($q, $filters);
+        })->sum('quantity') ?? 0;
+
+        // تعداد مشتریان یکتا
+        $uniqueCustomers = $this->buildOrderQuery($filters)
+            ->distinct('orders.user_id')
+            ->count('orders.user_id');
 
         return [
-            'total_orders' => $query->count(),
-            'total_revenue' => $query->sum('total') ?? 0,
-            'total_discount' => $query->sum('discount_amount') ?? 0,
-            'average_order_value' => $query->count() > 0
-                ? round($query->sum('total') / $query->count())
-                : 0,
-            'max_order_value' => $query->max('total') ?? 0,
-            'min_order_value' => $query->min('total') ?? 0,
-            'total_items' => OrderItem::whereHas('order', function ($q) use ($filters) {
-                $this->applyOrderFilters($q, $filters);
-            })->sum('quantity') ?? 0,
-            'unique_customers' => $query->distinct('user_id')->count('user_id'),
+            'total_orders'        => (int) ($aggregates->total_orders ?? 0),
+            'total_revenue'       => (float) ($aggregates->total_revenue ?? 0),
+            'total_discount'      => (float) ($aggregates->total_discount ?? 0),
+            'average_order_value' => (float) round($aggregates->average_order_value ?? 0),
+            'max_order_value'     => (float) ($aggregates->max_order_value ?? 0),
+            'min_order_value'     => (float) ($aggregates->min_order_value ?? 0),
+            'total_items'         => (int) $totalItems,
+            'unique_customers'    => (int) $uniqueCustomers,
         ];
     }
 
@@ -1219,61 +1148,80 @@ class ReportsController extends Controller
     /**
      * اعمال فیلترها روی کوئری سفارشات
      */
-    private function applyOrderFilters($query, $filters)
+    private function applyOrderFilters($query, array $filters): void
     {
-        // فیلتر تاریخ
+        // تاریخ شروع
         if (!empty($filters['date_from'])) {
-            $query->whereDate('created_at', '>=', $filters['date_from']);
-        }
-        if (!empty($filters['date_to'])) {
-            $query->whereDate('created_at', '<=', $filters['date_to']);
+            $query->whereDate('orders.created_at', '>=', $filters['date_from']);
         }
 
-        // فیلتر وضعیت
+        // تاریخ پایان
+        if (!empty($filters['date_to'])) {
+            $query->whereDate('orders.created_at', '<=', $filters['date_to']);
+        }
+
+        // وضعیت سفارش
         if (!empty($filters['status'])) {
             $query->where('orders.status', $filters['status']);
         }
 
-        // فیلتر وضعیت پرداخت - با نام جدول
+        // وضعیت پرداخت
         if (!empty($filters['payment_status'])) {
             $query->where('orders.payment_status', $filters['payment_status']);
         }
 
-        // فیلتر روش پرداخت - با نام جدول
+        // روش پرداخت
         if (!empty($filters['payment_method'])) {
             $query->where('orders.payment_method', $filters['payment_method']);
         }
 
-        // فیلتر استان
+        // استان
         if (!empty($filters['province'])) {
             $query->whereHas('address.province', function ($q) use ($filters) {
                 $q->where('name', 'like', "%{$filters['province']}%");
             });
         }
 
-        // فیلتر شهر
+        // شهر
         if (!empty($filters['city'])) {
             $query->whereHas('address.city', function ($q) use ($filters) {
                 $q->where('name', 'like', "%{$filters['city']}%");
             });
         }
 
-        // فیلتر روش حمل
+        // روش حمل و نقل
         if (!empty($filters['shipping_method_id'])) {
-            $query->where('shipping_id', $filters['shipping_method_id']);
+            $query->where('orders.shipping_id', $filters['shipping_method_id']);
         }
 
-        // فیلتر کاربر
+        // کاربر
         if (!empty($filters['user_id'])) {
-            $query->where('user_id', $filters['user_id']);
+            $query->where('orders.user_id', $filters['user_id']);
         }
 
-        // فیلتر قیمت
+        // بازه قیمت
         if (!empty($filters['min_total'])) {
-            $query->where('total', '>=', $filters['min_total']);
+            $query->where('orders.total', '>=', $filters['min_total']);
         }
         if (!empty($filters['max_total'])) {
-            $query->where('total', '<=', $filters['max_total']);
+            $query->where('orders.total', '<=', $filters['max_total']);
+        }
+
+        // وجود کد تخفیف
+        if (isset($filters['has_coupon']) && $filters['has_coupon'] !== '') {
+            if ((string) $filters['has_coupon'] === '1') {
+                $query->whereNotNull('orders.coupon_id');
+            } elseif ((string) $filters['has_coupon'] === '0') {
+                $query->whereNull('orders.coupon_id');
+            }
+        }
+
+        // مقدار تخفیف
+        if (!empty($filters['min_discount'])) {
+            $query->where('orders.discount_amount', '>=', $filters['min_discount']);
+        }
+        if (!empty($filters['max_discount'])) {
+            $query->where('orders.discount_amount', '<=', $filters['max_discount']);
         }
     }
 
@@ -1284,24 +1232,26 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->select(
-            DB::raw('DATE(created_at) as date'),
-            DB::raw('COUNT(*) as orders_count'),
-            DB::raw('SUM(total) as total_sales'),
-            DB::raw('SUM(discount_amount) as total_discount'),
-            DB::raw('AVG(total) as average_order')
-        )
+        return $query
+            ->whereNotNull('orders.created_at')
+            ->select(
+                DB::raw('DATE(orders.created_at) as date'),
+                DB::raw('COUNT(*) as orders_count'),
+                DB::raw('SUM(orders.total) as total_sales'),
+                DB::raw('SUM(orders.discount_amount) as total_discount'),
+                DB::raw('AVG(orders.total) as average_order')
+            )
             ->groupBy('date')
             ->orderBy('date', 'desc')
             ->limit(30)
             ->get()
             ->map(function ($item) {
                 return [
-                    'date' => $item->date,
-                    'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'date'           => $item->date,
+                    'orders_count'   => (int) $item->orders_count,
+                    'total_sales'    => (float) $item->total_sales,
                     'total_discount' => (float) $item->total_discount,
-                    'average_order' => (float) $item->average_order,
+                    'average_order'  => (float) $item->average_order,
                 ];
             });
     }
@@ -1313,21 +1263,23 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->select(
-            DB::raw('DATE_FORMAT(created_at, "%Y-%m") as month'),
-            DB::raw('COUNT(*) as orders_count'),
-            DB::raw('SUM(total) as total_sales'),
-            DB::raw('SUM(discount_amount) as total_discount')
-        )
+        return $query
+            ->whereNotNull('orders.created_at')
+            ->select(
+                DB::raw('DATE_FORMAT(orders.created_at, "%Y-%m") as month'),
+                DB::raw('COUNT(*) as orders_count'),
+                DB::raw('SUM(orders.total) as total_sales'),
+                DB::raw('SUM(orders.discount_amount) as total_discount')
+            )
             ->groupBy('month')
             ->orderBy('month', 'desc')
             ->limit(12)
             ->get()
             ->map(function ($item) {
                 return [
-                    'month' => $item->month,
-                    'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'month'          => $item->month,
+                    'orders_count'   => (int) $item->orders_count,
+                    'total_sales'    => (float) $item->total_sales,
                     'total_discount' => (float) $item->total_discount,
                 ];
             });
@@ -1339,18 +1291,19 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->select(
-            'status',
-            DB::raw('COUNT(*) as orders_count'),
-            DB::raw('SUM(total) as total_sales')
-        )
-            ->groupBy('status')
+        return $query
+            ->select(
+                'orders.status',
+                DB::raw('COUNT(*) as orders_count'),
+                DB::raw('SUM(orders.total) as total_sales')
+            )
+            ->groupBy('orders.status')
             ->get()
             ->map(function ($item) {
                 return [
-                    'status' => $item->status,
+                    'status'       => $item->status,
                     'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'total_sales'  => (float) $item->total_sales,
                 ];
             });
     }
@@ -1362,18 +1315,19 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->select(
-            'payment_method',
-            DB::raw('COUNT(*) as orders_count'),
-            DB::raw('SUM(total) as total_sales')
-        )
-            ->groupBy('payment_method')
+        return $query
+            ->select(
+                'orders.payment_method',
+                DB::raw('COUNT(*) as orders_count'),
+                DB::raw('SUM(orders.total) as total_sales')
+            )
+            ->groupBy('orders.payment_method')
             ->get()
             ->map(function ($item) {
                 return [
                     'payment_method' => $item->payment_method,
-                    'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'orders_count'   => (int) $item->orders_count,
+                    'total_sales'    => (float) $item->total_sales,
                 ];
             });
     }
@@ -1385,7 +1339,8 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->join('addresses', 'orders.address_id', '=', 'addresses.id')
+        return $query
+            ->join('addresses', 'orders.address_id', '=', 'addresses.id')
             ->join('provinces', 'addresses.province_id', '=', 'provinces.id')
             ->select(
                 'provinces.name as province_name',
@@ -1398,13 +1353,12 @@ class ReportsController extends Controller
             ->get()
             ->map(function ($item) {
                 return [
-                    'province' => $item->province_name ?? 'نامشخص',
+                    'province'     => $item->province_name ?? 'نامشخص',
                     'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'total_sales'  => (float) $item->total_sales,
                 ];
             });
     }
-
     /**
      * نمودار فروش به تفکیک روش حمل و نقل
      */
@@ -1412,7 +1366,8 @@ class ReportsController extends Controller
     {
         $query = $this->buildOrderQuery($filters);
 
-        return $query->join('shippings', 'orders.shipping_id', '=', 'shippings.id')
+        return $query
+            ->join('shippings', 'orders.shipping_id', '=', 'shippings.id')
             ->select(
                 'shippings.title as shipping_title',
                 DB::raw('COUNT(*) as orders_count'),
@@ -1424,8 +1379,8 @@ class ReportsController extends Controller
             ->map(function ($item) {
                 return [
                     'shipping_method' => $item->shipping_title ?? 'نامشخص',
-                    'orders_count' => (int) $item->orders_count,
-                    'total_sales' => (float) $item->total_sales,
+                    'orders_count'    => (int) $item->orders_count,
+                    'total_sales'     => (float) $item->total_sales,
                 ];
             });
     }

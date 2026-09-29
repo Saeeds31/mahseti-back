@@ -57,15 +57,28 @@ class FrontController extends Controller
 
     public function filters()
     {
-        $data = [];
-        $data['categories'] = Category::with('children')
-            ->whereNull('parent_id')
-            ->get();
-        $data['price'] = $this->priceRange();
+
+        $categories = CacheService::rememberWithTags(
+            [CacheService::TAG_CATEGORIES],
+            CacheService::BASE_CATEGORIES,
+            CacheService::TTL_ONE_MONTH,
+            fn() => Category::with('children')
+                ->whereNull('parent_id')
+                ->get()
+        );
+
+        $priceRange = CacheService::remember(
+            CacheService::PRODUCTS_PRICE,
+            CacheService::TTL_ONE_WEEK,
+            fn() => $this->priceRange()
+        );
         return response()->json([
             'success' => true,
             'message' => 'فیلتر های محصولات',
-            'data'    => $data
+            'data'    => [
+                'categories' => $categories,
+                'price'      => $priceRange,
+            ]
         ], 200);
     }
 
@@ -96,37 +109,71 @@ class FrontController extends Controller
         $data = [];
 
         // دسته‌بندی‌های انتخاب شده برای نمایش در صفحه اصلی
-        $selectedCategories = Category::where('show_in_home', 1)->get();
-        $data['selected_categories'] = $selectedCategories;
 
-        // لیست محصولات هر دسته‌بندی که show_products_in_home دارند
-        $selectedCategoryList = [];
-        $categoriesWithProducts = Category::where('show_products_in_home', 1)->get();
+        $data['selected_categories'] = CacheService::rememberWithTags(
+            [CacheService::TAG_CATEGORIES],
+            'home_selected_categories',
+            CacheService::TTL_ONE_MONTH,
+            fn() => Category::where('show_in_home', 1)->get()
+        );
 
-        foreach ($categoriesWithProducts as $category) {
-            // دریافت ۱۰ محصول آخر این دسته‌بندی (بر اساس تاریخ ایجاد)
-            $products = $category->products()
-                ->where('status', 'published') // فقط محصولات منتشر شده
-                ->whereIn('sales_channel', ['online_only', 'both']) // فقط محصولات قابل فروش آنلاین
-                ->orderBy('created_at', 'desc')
-                ->limit(12)
-                ->get();
+        // لیست محصولات هر دسته‌بندی
+        $data['selectedCategoryList'] = CacheService::rememberWithTags(
+            [CacheService::TAG_CATEGORIES, CacheService::TAG_PRODUCTS],
+            'home_selected_category_products',
+            CacheService::TTL_ONE_DAY,
+            function () {
+                $list = [];
+                $categories = Category::where('show_products_in_home', 1)->get();
 
-            $selectedCategoryList[] = [
-                'id' => $category->id,
-                'title' => $category->title,
-                'slug' => $category->slug,
-                'list' => $products
-            ];
-        }
-        $is_rechargeables = Product::where('is_rechargeable', true)->take(15)->get();
-        $data['is_rechargeables'] = $is_rechargeables;
-        $data['selectedCategoryList'] = $selectedCategoryList;
-        $data['top_discounted_products'] = Product::topDiscounted();
-        $data['banners'] = Banner::groupedByPosition();
-        $data['sliders'] = Slider::orderBy('id')->get();
-        $data['new_products'] = Product::latestProducts();
-        $data['blogs'] = Article::latestArticles();
+                foreach ($categories as $category) {
+                    $products = $category->products()
+                        ->where('status', 'published')
+                        ->whereIn('sales_channel', ['online_only', 'both'])
+                        ->orderBy('created_at', 'desc')
+                        ->limit(12)
+                        ->get();
+
+                    $list[] = [
+                        'id'    => $category->id,
+                        'title' => $category->title,
+                        'slug'  => $category->slug,
+                        'list'  => $products,
+                    ];
+                }
+                return $list;
+            }
+        );
+
+        $data['is_rechargeables'] = CacheService::rememberWithTags(
+            [CacheService::TAG_PRODUCTS],
+            'home_rechargeables',
+            CacheService::TTL_ONE_DAY,
+            fn() => Product::where('is_rechargeable', true)->take(15)->get()
+        );
+        $data['banners'] =
+            CacheService::remember(
+                CacheService::HOME_BANNER,
+                CacheService::TTL_ONE_MONTH,
+                fn() => Banner::groupedByPosition()
+            );
+        $data['sliders'] = CacheService::remember(
+            CacheService::HOME_SLIDER,
+            CacheService::TTL_ONE_MONTH,
+            fn() => Slider::orderBy('id')->get()
+        );
+        $data['new_products'] = CacheService::rememberWithTags(
+            [CacheService::TAG_PRODUCTS],
+            'home_new_products',
+            CacheService::TTL_ONE_WEEK,
+            fn() => Product::latestProducts()
+        );
+        $data['blogs'] = CacheService::rememberWithTags(
+            [CacheService::TAG_BLOGS],
+            'home_latest_articles',
+            CacheService::TTL_ONE_MONTH,
+            fn() => Article::latestArticles()
+        );
 
         return response()->json([
             'success' => true,

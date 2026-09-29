@@ -111,7 +111,8 @@ class ExpireUnpaidOrders extends Command
 
             $paymentFailureService->failOrder(
                 order: $order,
-                reason: 'Payment timeout.'
+                reason: 'Payment timeout.',
+                status: 'cancelled'
             );
 
             $this->processedCount++;

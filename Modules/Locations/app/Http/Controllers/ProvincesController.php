@@ -3,6 +3,7 @@
 namespace Modules\Locations\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Support\CacheService;
 use Modules\Addresses\Models\Address;
 use Modules\Locations\Http\Requests\ProvinceStoreRequest;
 use Modules\Locations\Http\Requests\ProvinceUpdateRequest;
@@ -13,14 +14,18 @@ class ProvincesController extends Controller
 {
     public function frontIndex()
     {
-        $provinces = Province::where('wp_added', 0)
-            ->orderBy('id')
-            ->get();
+        $provinces = CacheService::remember(
+            CacheService::BASE_PROVINCE,
+            CacheService::TTL_ONE_MONTH,
+            fn() => Province::where('wp_added', 0)
+                ->orderBy('id')
+                ->get()
+        );
 
         return response()->json([
             'message' => 'لیست استان ها',
             'success' => true,
-            'data' => $provinces
+            'data'    => $provinces
         ]);
     }
     /**

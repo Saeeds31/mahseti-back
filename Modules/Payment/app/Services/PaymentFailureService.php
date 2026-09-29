@@ -23,12 +23,14 @@ class PaymentFailureService
     public function failOrder(
         Order $order,
         ?GatewayTransaction $gatewayTransaction = null,
-        string $reason = 'Payment failed.'
+        string $reason = 'Payment failed.',
+        string $status = 'failed'
     ): void {
         DB::transaction(function () use (
             $order,
             $gatewayTransaction,
-            $reason
+            $reason,
+            $status
         ) {
 
             /** @var Order $order */
@@ -137,7 +139,7 @@ class PaymentFailureService
              * تغییر وضعیت سفارش
              */
             $order->update([
-                'status' => 'failed',
+                'status' => $status,
                 'payment_status' => 'failed',
             ]);
 
