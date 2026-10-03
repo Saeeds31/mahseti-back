@@ -313,8 +313,8 @@ class ShippingController extends Controller
             // 5) اگر روش رزرو معتبر نبود => برو سراغ سایر روش‌ها با محاسبه تفاوت
             // =====================================================
             $shippings = Shipping::with('conditions')
-                ->where('status', 1)
                 ->when($reservationShippingId, fn($q) => $q->where('id', '!=', $reservationShippingId))
+                ->whereIn('status', [1, '1', true])
                 ->get();
             $available = [];
 
@@ -337,11 +337,11 @@ class ShippingController extends Controller
                     switch ($condition->condition) {
                         case 'total':
                             $met = match ($type) {
-                                '==' => $subTotal == $value,
-                                '>=' => $subTotal >= $value,
-                                '<=' => $subTotal <= $value,
-                                '>'  => $subTotal > $value,
-                                '<'  => $subTotal < $value,
+                                '==' => $newTotal == $value,
+                                '>=' => $newTotal >= $value,
+                                '<=' => $newTotal <= $value,
+                                '>'  => $newTotal > $value,
+                                '<'  => $newTotal < $value,
                                 default => false,
                             };
                             break;
@@ -356,11 +356,11 @@ class ShippingController extends Controller
 
                         case 'quantity':
                             $met = match ($type) {
-                                '==' => $quantity == $value,
-                                '>=' => $quantity >= $value,
-                                '<=' => $quantity <= $value,
-                                '>'  => $quantity > $value,
-                                '<'  => $quantity < $value,
+                                '==' => $newQuantity == $value,
+                                '>=' => $newQuantity >= $value,
+                                '<=' => $newQuantity <= $value,
+                                '>'  => $newQuantity > $value,
+                                '<'  => $newQuantity < $value,
                                 default => false,
                             };
                             break;
