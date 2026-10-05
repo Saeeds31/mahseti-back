@@ -1,0 +1,455 @@
+<?php
+
+namespace Modules\Users\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Routing\Controller;
+use Illuminate\Support\Facades\DB;
+use Modules\Users\Models\User;
+use Modules\Wallet\Models\Wallet;
+use Modules\Wallet\Models\WalletTransaction;
+use Modules\Addresses\Models\Address;
+use Modules\Orders\Models\Order;
+
+class UserMergeController extends Controller
+{
+    /**
+     * نرمال‌سازی شماره موبایل
+     * قانون: ۱۱ رقم اول رشته عددی همیشه درست است.
+     */
+    private function normalizeMobile(?string $mobile): ?string
+    {
+        if (empty($mobile)) {
+            return null;
+        }
+
+        $digits = preg_replace('/\D/', '', $mobile);
+
+        if (empty($digits)) {
+            return null;
+        }
+
+        // حذف 00
+        if (str_starts_with($digits, '00')) {
+            $digits = substr($digits, 2);
+        }
+
+        // حذف 98 اگر بعدش 9 باشد
+        if (str_starts_with($digits, '98') && strlen($digits) > 2 && $digits[2] === '9') {
+            $digits = substr($digits, 2);
+        }
+
+        // اگر با 9 شروع شد → 0 اضافه کن
+        if (str_starts_with($digits, '9') && strlen($digits) >= 10) {
+            $digits = '0' . $digits;
+        }
+
+        if (!str_starts_with($digits, '09')) {
+            return null;
+        }
+
+        if (strlen($digits) < 11) {
+            return null;
+        }
+
+        return substr($digits, 0, 11);
+    }
+
+    /**
+     * لیست گروه‌های کاربران تکراری
+     * GET /api/admin/users/duplicates?search=&per_page=15&page=1
+     */
+    public function index(Request $request)
+    {
+        $search  = $request->query('search');
+        $perPage = (int) $request->query('per_page', 15);
+        $page    = (int) $request->query('page', 1);
+
+        // بارگذاری همه کاربران
+        $users = User::query()
+            ->whereNotNull('mobile')
+            ->where('mobile', '!=', '')
+            ->select('id', 'full_name', 'mobile', 'created_at')
+            ->orderBy('id')
+            ->get();
+
+        // گروه‌بندی بر اساس شماره نرمال‌شده
+        $groups = [];
+        foreach ($users as $user) {
+            $normalized = $this->normalizeMobile($user->mobile);
+            if ($normalized === null) {
+                continue;
+            }
+            $groups[$normalized][] = $user;
+        }
+
+        // فقط گروه‌های تکراری
+        $duplicates = array_filter($groups, fn($g) => count($g) > 1);
+
+        // فیلتر جستجو
+        if ($search) {
+            $duplicates = array_filter($duplicates, function ($group) use ($search) {
+                foreach ($group as $u) {
+                    if (
+                        str_contains($u->mobile, $search) ||
+                        str_contains($u->full_name ?? '', $search)
+                    ) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+        }
+
+        // مرتب‌سازی بر اساس تعداد اعضا (بیشترین اول)
+        usort($duplicates, fn($a, $b) => count($b) - count($a));
+
+        // صفحه‌بندی دستی
+        $total    = count($duplicates);
+        $lastPage = max(1, ceil($total / $perPage));
+        $offset   = ($page - 1) * $perPage;
+        $items    = array_slice($duplicates, $offset, $perPage);
+
+        // قالب‌بندی نهایی
+        $formatted = [];
+        foreach ($items as $group) {
+            // اصلی = کوچک‌ترین ID
+            usort($group, fn($a, $b) => $a->id - $b->id);
+            $primaryId = $group[0]->id;
+
+            $usersWithDetails = [];
+            foreach ($group as $u) {
+                $wallet = Wallet::where('user_id', $u->id)->first();
+                $usersWithDetails[] = [
+                    'id'              => $u->id,
+                    'full_name'       => $u->full_name,
+                    'mobile'          => $u->mobile,
+                    'created_at'      => $u->created_at,
+                    'addresses_count' => Address::where('user_id', $u->id)->count(),
+                    'orders_count'    => Order::where('user_id', $u->id)->count(),
+                    'has_wallet'      => (bool) $wallet,
+                    'wallet_balance'  => (int) ($wallet->balance ?? 0),
+                    'is_primary'      => $u->id === $primaryId,
+                ];
+            }
+
+            $formatted[] = [
+                'normalized_mobile' => $this->normalizeMobile($group[0]->mobile),
+                'primary_user_id'   => $primaryId,
+                'total_users'       => count($group),
+                'users'             => $usersWithDetails,
+            ];
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'data'         => $formatted,
+                'total'        => $total,
+                'per_page'     => $perPage,
+                'current_page' => $page,
+                'last_page'    => $lastPage,
+            ],
+        ]);
+    }
+
+    /**
+     * ادغام چند کاربر تکراری در کاربر اصلی
+     * POST /api/admin/users/merge
+     * Body: { primary_id, duplicate_ids: [1, 2, 3] }
+     */
+    public function merge(Request $request)
+    {
+        $validated = $request->validate([
+            'primary_id'    => 'required|integer|exists:users,id',
+            'duplicate_ids' => 'required|array|min:1',
+            'duplicate_ids.*' => 'required|integer|exists:users,id',
+        ]);
+
+        $primaryId    = (int) $validated['primary_id'];
+        $duplicateIds = array_map('intval', $validated['duplicate_ids']);
+
+        // حذف خود primary از لیست duplicate ها (اگر بود)
+        $duplicateIds = array_values(array_filter($duplicateIds, fn($id) => $id !== $primaryId));
+
+        if (empty($duplicateIds)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'هیچ کاربر تکراری معتبری انتخاب نشده است.',
+            ], 422);
+        }
+
+        // قانون: primary باید ID کوچک‌تر از همه duplicates باشد
+        foreach ($duplicateIds as $dupId) {
+            if ($primaryId > $dupId) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "کاربر اصلی (ID: {$primaryId}) باید ID کوچک‌تری از کاربر تکراری (ID: {$dupId}) داشته باشد.",
+                ], 422);
+            }
+        }
+
+        $primary = User::find($primaryId);
+        if (!$primary) {
+            return response()->json([
+                'success' => false,
+                'message' => 'کاربر اصلی یافت نشد.',
+            ], 404);
+        }
+
+        // بررسی هم‌شماره بودن همه
+        $primaryMobile = $this->normalizeMobile($primary->mobile);
+        $duplicates = User::whereIn('id', $duplicateIds)->get();
+
+        if ($duplicates->count() !== count($duplicateIds)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'برخی از کاربران تکراری یافت نشدند.',
+            ], 404);
+        }
+
+        foreach ($duplicates as $dup) {
+            if ($this->normalizeMobile($dup->mobile) !== $primaryMobile) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "شماره کاربر #{$dup->id} با کاربر اصلی یکسان نیست.",
+                ], 422);
+            }
+        }
+
+        $report = [
+            'users_merged'       => 0,
+            'addresses_moved'    => 0,
+            'orders_moved'       => 0,
+            'wallet_merged'      => 0,
+            'transactions_moved' => 0,
+            'merged_user_ids'    => [],
+        ];
+
+        try {
+            DB::transaction(function () use ($primaryId, $duplicateIds, &$report) {
+                foreach ($duplicateIds as $duplicateId) {
+                    // ۱. آدرس‌ها
+                    $report['addresses_moved'] += Address::where('user_id', $duplicateId)
+                        ->update(['user_id' => $primaryId]);
+
+                    // ۲. سفارش‌ها
+                    $report['orders_moved'] += Order::where('user_id', $duplicateId)
+                        ->update(['user_id' => $primaryId]);
+
+                    // ۳. کیف پول
+                    $dupWallet     = Wallet::where('user_id', $duplicateId)->first();
+                    $primaryWallet = Wallet::where('user_id', $primaryId)->first();
+
+                    if ($dupWallet) {
+                        if (!$primaryWallet) {
+                            // انتقال کیف پول
+                            $dupWallet->user_id = $primaryId;
+                            $dupWallet->save();
+                            $primaryWallet = $dupWallet;
+                            $report['wallet_merged']++;
+                        } else {
+                            // ادغام موجودی
+                            $primaryWallet->balance += $dupWallet->balance;
+                            $primaryWallet->save();
+
+                            // انتقال تراکنش‌ها
+                            $report['transactions_moved'] += WalletTransaction::where('wallet_id', $dupWallet->id)
+                                ->update(['wallet_id' => $primaryWallet->id]);
+
+                            // حذف کیف پول تکراری
+                            $dupWallet->delete();
+                            $report['wallet_merged']++;
+                        }
+                    }
+
+                    // ۴. حذف کاربر تکراری
+                    User::where('id', $duplicateId)->delete();
+                    $report['merged_user_ids'][] = $duplicateId;
+                    $report['users_merged']++;
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => "{$report['users_merged']} کاربر با موفقیت ادغام شدند.",
+                'data'    => $report,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'خطا در ادغام: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+    public function bulkMerge(Request $request)
+    {
+        $validated = $request->validate([
+            'groups'                 => 'required|array|min:1',
+            'groups.*.primary_id'    => 'required|integer|exists:users,id',
+            'groups.*.duplicate_ids' => 'required|array|min:1',
+            'groups.*.duplicate_ids.*' => 'required|integer|exists:users,id',
+        ]);
+
+        $groups = $validated['groups'];
+
+        // ===== اعتبارسنجی اولیه همه گروه‌ها قبل از شروع =====
+        $normalizedGroups = [];
+
+        foreach ($groups as $index => $group) {
+            $primaryId    = (int) $group['primary_id'];
+            $duplicateIds = array_map('intval', $group['duplicate_ids']);
+
+            // حذف خود primary از لیست
+            $duplicateIds = array_values(array_filter(
+                $duplicateIds,
+                fn($id) => $id !== $primaryId
+            ));
+
+            if (empty($duplicateIds)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "گروه #" . ($index + 1) . ": هیچ کاربر تکراری معتبری انتخاب نشده است.",
+                ], 422);
+            }
+
+            // قانون: primary باید ID کوچک‌تر باشد
+            foreach ($duplicateIds as $dupId) {
+                if ($primaryId > $dupId) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "گروه #" . ($index + 1) . ": کاربر اصلی (ID: {$primaryId}) باید ID کوچک‌تری از کاربر تکراری (ID: {$dupId}) داشته باشد.",
+                    ], 422);
+                }
+            }
+
+            $primary = User::find($primaryId);
+            if (!$primary) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "گروه #" . ($index + 1) . ": کاربر اصلی یافت نشد.",
+                ], 404);
+            }
+
+            $duplicates = User::whereIn('id', $duplicateIds)->get();
+            if ($duplicates->count() !== count($duplicateIds)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "گروه #" . ($index + 1) . ": برخی از کاربران تکراری یافت نشدند.",
+                ], 404);
+            }
+
+            // بررسی هم‌شماره بودن
+            $primaryMobile = $this->normalizeMobile($primary->mobile);
+            foreach ($duplicates as $dup) {
+                if ($this->normalizeMobile($dup->mobile) !== $primaryMobile) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "گروه #" . ($index + 1) . ": شماره کاربر #{$dup->id} با کاربر اصلی یکسان نیست.",
+                    ], 422);
+                }
+            }
+
+            $normalizedGroups[] = [
+                'primary_id'    => $primaryId,
+                'duplicate_ids' => $duplicateIds,
+            ];
+        }
+
+        // ===== بررسی نبود تداخل بین گروه‌ها =====
+        $allPrimaryIds   = array_column($normalizedGroups, 'primary_id');
+        $allDuplicateIds = [];
+        foreach ($normalizedGroups as $g) {
+            $allDuplicateIds = array_merge($allDuplicateIds, $g['duplicate_ids']);
+        }
+
+        // هیچ کاربری نباید هم primary و هم duplicate باشد
+        $conflict = array_intersect($allPrimaryIds, $allDuplicateIds);
+        if (!empty($conflict)) {
+            return response()->json([
+                'success' => false,
+                'message' => "کاربر(ان) " . implode(', ', $conflict) . " هم به عنوان primary و هم duplicate انتخاب شده‌اند.",
+            ], 422);
+        }
+
+        // هیچ کاربری نباید در دو گروه duplicate باشد
+        $duplicateCounts = array_count_values($allDuplicateIds);
+        $duplicateInTwo  = array_keys(array_filter($duplicateCounts, fn($c) => $c > 1));
+        if (!empty($duplicateInTwo)) {
+            return response()->json([
+                'success' => false,
+                'message' => "کاربر(ان) " . implode(', ', $duplicateInTwo) . " در چند گروه به عنوان تکراری انتخاب شده‌اند.",
+            ], 422);
+        }
+
+        // ===== اجرای ادغام =====
+        $report = [
+            'groups_merged'      => 0,
+            'users_merged'       => 0,
+            'addresses_moved'    => 0,
+            'orders_moved'       => 0,
+            'wallet_merged'      => 0,
+            'transactions_moved' => 0,
+            'merged_user_ids'    => [],
+            'errors'             => [],
+        ];
+
+        try {
+            DB::transaction(function () use ($normalizedGroups, &$report) {
+                foreach ($normalizedGroups as $group) {
+                    $primaryId    = $group['primary_id'];
+                    $duplicateIds = $group['duplicate_ids'];
+
+                    foreach ($duplicateIds as $duplicateId) {
+                        // ۱. آدرس‌ها
+                        $report['addresses_moved'] += Address::where('user_id', $duplicateId)
+                            ->update(['user_id' => $primaryId]);
+
+                        // ۲. سفارش‌ها
+                        $report['orders_moved'] += Order::where('user_id', $duplicateId)
+                            ->update(['user_id' => $primaryId]);
+
+                        // ۳. کیف پول
+                        $dupWallet     = Wallet::where('user_id', $duplicateId)->first();
+                        $primaryWallet = Wallet::where('user_id', $primaryId)->first();
+
+                        if ($dupWallet) {
+                            if (!$primaryWallet) {
+                                $dupWallet->user_id = $primaryId;
+                                $dupWallet->save();
+                                $report['wallet_merged']++;
+                            } else {
+                                $primaryWallet->balance += $dupWallet->balance;
+                                $primaryWallet->save();
+
+                                $report['transactions_moved'] += WalletTransaction::where('wallet_id', $dupWallet->id)
+                                    ->update(['wallet_id' => $primaryWallet->id]);
+
+                                $dupWallet->delete();
+                                $report['wallet_merged']++;
+                            }
+                        }
+
+                        // ۴. حذف کاربر تکراری
+                        User::where('id', $duplicateId)->delete();
+                        $report['merged_user_ids'][] = $duplicateId;
+                        $report['users_merged']++;
+                    }
+
+                    $report['groups_merged']++;
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => "{$report['groups_merged']} گروه ({$report['users_merged']} کاربر) با موفقیت ادغام شدند.",
+                'data'    => $report,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'خطا در ادغام گروهی: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+}

@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/channel",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Channel\\": "app/",
+            "Modules\\Channel\\Database\\Factories\\": "database/factories/",
+            "Modules\\Channel\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Channel\\Tests\\": "tests/"
+        }
+    }
+}

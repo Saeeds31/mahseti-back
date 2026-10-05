@@ -1,0 +1,2308 @@
+<?php
+
+namespace Modules\Orders\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use App\Services\SmsService;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Modules\Addresses\Models\Address;
+use Modules\Cart\Models\Cart;
+use Modules\Coupons\Models\Coupon;
+use Modules\Coupons\Services\CouponService;
+use Modules\Gateway\Models\GatewayTransaction;
+use Modules\Notifications\Services\NotificationService;
+use Modules\Orders\Http\Requests\OrderStoreRequest;
+use Modules\Orders\Http\Requests\OrderUpdateRequest;
+use Modules\Orders\Models\Order;
+use Modules\Payment\Services\PaymentCompletionService;
+use Modules\Payment\Services\PaymentService;
+use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
+use Modules\Shipping\Models\Shipping;
+use Modules\Shipping\Services\ShippingService;
+use Modules\Users\Models\User;
+use Modules\Wallet\Models\Wallet;
+use Modules\Wallet\Services\WalletService;
+
+class OrdersController extends Controller
+{
+    public function __construct(
+        protected PaymentService $paymentService,
+        protected WalletService $walletService,
+        protected ProductStockService $productStockService,
+        protected PaymentCompletionService $paymentCompletionService,
+        protected NotificationService $notifications,
+        protected SmsService $smsService,
+    ) {}
+
+    /**
+     * تکمیل گروهی سفارش‌ها
+     */
+    public function bulkComplete(Request $request)
+    {
+        $validated = $request->validate([
+            'ids'   => 'required|array|min:1',
+            'ids.*' => 'integer|exists:orders,id',
+        ]);
+
+        // سفارش‌ها را با روابط لازم لود می‌کنیم
+        $orders = Order::with(['user', 'address'])
+            ->whereIn('id', $validated['ids'])
+            ->whereNotIn('status', ['completed', 'canceled', 'returned'])
+            ->get();
+
+        $updated = 0;
+
+        foreach ($orders as $order) {
+            // آپدیت وضعیت
+            $order->status = 'completed';
+            $order->save();
+            $updated++;
+
+            // ارسال پیامک
+            try {
+                if ($order->user && $order->user->mobile) {
+                    $this->smsService->sendToKavenegar(
+                        'change-order-status',
+                        $order->user->mobile,
+                        $order->id,
+                        [
+                            'token20' => $order->user->getDisplayName(
+                                $order->address?->receiver_name
+                            ),
+                            'token10' => $order->status_label,
+                        ]
+                    );
+                }
+            } catch (\Throwable $e) {
+                // خطای پیامک نباید کل عملیات را متوقف کند
+                Log::warning('SMS send failed for order #' . $order->id, [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$updated} سفارش با موفقیت تکمیل شد.",
+            'updated' => $updated,
+        ]);
+    }
+    /**
+     * لیست سفارش‌ها
+     */
+
+    public function index(Request $request)
+    {
+        $query = Order::with([
+            'user',
+            'address',
+            'shipping',
+            'gatewayTransactions',
+            'items',
+            'childOrders' => function ($query) {
+                $query->with(['user', 'address', 'shipping', 'items']);
+            }
+        ])
+            ->whereNull('parent_order_id');
+
+        // سرچ عمومی (نام کامل و موبایل کاربر روی سفارش و آدرس)
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('address', function ($aq) use ($search) {
+                        $aq->where('receiver_name', 'like', "%{$search}%")
+                            ->orWhere('phone', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        // سرچ جدا برای آیتم‌های سفارش
+        if ($request->filled('item_search')) {
+            $itemSearch = trim($request->item_search);
+
+            $query->whereHas('items.product', function ($pq) use ($itemSearch) {
+                $pq->where('title', 'like', "%{$itemSearch}%")
+                    ->orWhere('sku', 'like', "%{$itemSearch}%")
+                    ->orWhere('barcode', 'like', "%{$itemSearch}%");
+            });
+        }
+
+        // فیلتر استان
+        if ($request->filled('province_id')) {
+            $query->whereHas('address', function ($aq) use ($request) {
+                $aq->where('province_id', $request->province_id);
+            });
+        }
+
+        // فیلتر شهر
+        if ($request->filled('city_id')) {
+            $query->whereHas('address', function ($aq) use ($request) {
+                $aq->where('city_id', $request->city_id);
+            });
+        }
+
+        // فیلتر وضعیت
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // فیلتر وضعیت پرداخت
+        if ($request->filled('payment_status')) {
+            $query->where('payment_status', $request->payment_status);
+        }
+
+        // فیلتر روش پرداخت
+        if ($request->filled('payment_method')) {
+            $query->where('payment_method', $request->payment_method);
+        }
+
+        // فیلتر تاریخ از
+        if ($request->filled('date_from')) {
+            $query->where('created_at', '>=', $request->date_from);
+        }
+
+        // فیلتر تاریخ تا
+        if ($request->filled('date_to')) {
+            $query->where('created_at', '<=', $request->date_to);
+        }
+
+        $orders = $query->orderBy('created_at', 'desc')->paginate(20);
+
+        return response()->json([
+            'message' => "لیست سفارشات",
+            'data' => $orders,
+            'success' => true
+        ]);
+    }
+
+    /**
+     * ایجاد سفارش جدید
+     */
+    public function store(OrderStoreRequest $request)
+    {
+        $data = $request->validate([
+            'user_id'            => 'required|exists:users,id',
+            'address_id'         => 'required|exists:addresses,id',
+            'shipping_id' => 'required|exists:shippings,id',
+            'subtotal'           => 'required|numeric|min:0',
+            'discount_amount'    => 'nullable|numeric|min:0',
+            'shipping_cost'      => 'nullable|numeric|min:0',
+            'total'              => 'required|numeric|min:0',
+            'payment_method'     => 'nullable|string|max:50',
+            'payment_status'     => 'nullable|in:pending,paid,failed',
+            'status'             => 'nullable|in:pending,paid,completed,cancelled',
+        ]);
+
+        $order = Order::create($data);
+        $this->notifications->create(
+            "ثبت سفارش",
+            " یک سفارش در سیستم ثبت  شد",
+            "notification_order",
+            ['order' => $order->id]
+        );
+        return response()->json($order->load(['user', 'address', 'shipping']), 201);
+    }
+
+    /**
+     * نمایش جزئیات سفارش
+     */
+    public function show(Order $order)
+    {
+        // بارگذاری کامل سفارش با تمام فرزندان
+        $order = Order::withAllChildren()->find($order->id);
+
+        return response()->json([
+            'message' => 'جزئیات سفارش',
+            'success' => true,
+            'data' => $order
+        ]);
+    }
+
+    /**
+     * بروزرسانی سفارش
+     */
+    public function update(OrderUpdateRequest $request, Order $order)
+    {
+        $data = $request->validate([
+            'user_id'            => 'sometimes|exists:users,id',
+            'address_id'         => 'sometimes|exists:addresses,id',
+            'shipping_id' => 'sometimes|exists:shippings,id',
+            'subtotal'           => 'sometimes|numeric|min:0',
+            'discount_amount'    => 'nullable|numeric|min:0',
+            'shipping_cost'      => 'nullable|numeric|min:0',
+            'total'              => 'sometimes|numeric|min:0',
+            'payment_method'     => 'nullable|string|max:50',
+            'payment_status'     => 'nullable|in:pending,paid,failed',
+            'status'             => 'nullable|in:pending,paid,completed,cancelled',
+        ]);
+
+        $order->update($data);
+        $this->notifications->create(
+            "ویرایش سفارش",
+            " یک سفارش در سیستم ویرایش  شد",
+            "notification_order",
+            ['order' => $order->id]
+        );
+        return response()->json($order->load(['user', 'address', 'shipping', 'items']));
+    }
+
+    /**
+     * حذف سفارش
+     */
+    public function destroy(Order $order)
+    {
+        // $order->delete();
+        // return response()->json(['message' => 'Order deleted successfully']);
+    }
+
+
+    public function storeInAdmin(Request $request)
+    {
+        $data = $request->validate([
+            'user_id' => 'required|exists:users,id',
+            'address_id' => 'required|exists:addresses,id',
+            'shipping_id' => 'required|exists:shippings,id',
+            'subtotal' => 'required|numeric|min:0',
+            'user_note'       => 'nullable|string',
+            'discount_amount' => 'nullable|numeric|min:0',
+            'shipping_cost' => 'nullable|numeric|min:0',
+            'total' => 'required|numeric|min:0',
+            'items' => 'required|array|min:1',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.product_variant_id' => 'required|exists:product_variants,id',
+            'items.*.quantity' => 'required|integer|min:1',
+            'items.*.price' => 'required|numeric|min:0',
+            'parent_order_id' => 'nullable|exists:orders,id',
+            'reservation_type' => 'nullable|in:three_days,seven_days',
+        ]);
+        $reservationType = $request->input('reservation_type', 'none');
+
+        return DB::transaction(function () use ($data, $reservationType) {
+            $user = User::with(['wallet'])->findOrFail($data['user_id']);
+
+            // ایجاد یا دریافت کیف پول
+            if (empty($user->wallet)) {
+                Wallet::create([
+                    'user_id' => $user->id,
+                    'balance' => 0,
+                ]);
+                $user->load('wallet');
+            }
+
+            // بررسی موجودی کیف پول
+            if ($user->wallet->balance < $data['total']) {
+                return response()->json(['message' => 'موجودی کیف پول کافی نیست'], 422);
+            }
+
+            // بررسی موجودی محصولات
+            foreach ($data['items'] as $item) {
+                $variant = ProductVariant::findOrFail($item['product_variant_id']);
+                if ($variant->stock < $item['quantity']) {
+                    return response()->json([
+                        'message' => "موجودی تنوع {$variant->id} کافی نیست"
+                    ], 422);
+                }
+            }
+
+            // بررسی parent_order در صورت وجود
+            $parentOrder = null;
+            if (!empty($data['parent_order_id'])) {
+                $parentOrder = Order::where('id', $data['parent_order_id'])
+                    ->where('user_id', $data['user_id'])
+                    ->where('status', 'reserved')
+                    ->where('reserved_until', '>', now())
+                    ->first();
+
+                if (!$parentOrder) {
+                    return response()->json([
+                        'message' => 'سفارش رزرو معتبر یافت نشد'
+                    ], 422);
+                }
+            }
+
+            // تعیین وضعیت سفارش
+            $orderStatus = 'paid';
+            $paymentStatus = 'paid';
+
+            // اگر parent_order وجود داشته باشد
+            if ($parentOrder) {
+                // سفارش فرزند به همان روش والد ثبت می‌شود
+                $orderStatus = 'paid';
+                $paymentStatus = 'paid';
+            } else if (!empty($data['reservation_type'])) {
+                // سفارش رزرو جدید
+                $orderStatus = 'reserved';
+                $paymentStatus = 'paid'; // چون از کیف پول پرداخت می‌شود
+            }
+
+            // ایجاد سفارش
+            $order = Order::create([
+                'user_id' => $data['user_id'],
+                'address_id' => $data['address_id'],
+                'shipping_id' => $data['shipping_id'],
+                'user_note' => $data['user_note'],
+                'subtotal' => $data['subtotal'],
+                'discount_amount' => $data['discount_amount'] ?? 0,
+                'source' => 'website',
+                'shipping_cost' => $data['shipping_cost'] ?? 0,
+                'total' => $data['total'],
+                'payment_method' => 'wallet',
+                'payment_status' => $paymentStatus,
+                'status' => $orderStatus,
+                'parent_order_id' => $parentOrder ? $data['parent_order_id'] : null,
+                'reservation_type' => $reservationType,
+                'reserved_until' => empty($parentOrder) && !empty($data['reservation_type'])
+                    ? now()->addDays($data['reservation_type'] === 'three_days' ? 3 : 7)
+                    : null,
+            ]);
+
+            // ثبت آیتم‌ها و کم کردن موجودی
+            foreach ($data['items'] as $item) {
+                $variant = ProductVariant::findOrFail($item['product_variant_id']);
+
+                $order->items()->create([
+                    'product_id' => $item['product_id'],
+                    'product_variant_id' => $item['product_variant_id'],
+                    'quantity' => $item['quantity'],
+                    'price' => $item['price'],
+                ]);
+
+                $variant->decrement('stock', $item['quantity']);
+                $this->productStockService->sync($variant->product);
+            }
+
+            // کم کردن موجودی کیف پول
+            $user->wallet()->update([
+                'balance' => $user->wallet->balance - $data['total'],
+            ]);
+
+            $user->wallet->transactions()->create([
+                'type' => 'debit',
+                'amount' => $data['total'],
+                'description' => "پرداخت برای سفارش #{$order->id}",
+                'order_id' => $order->id,
+                'gateway_transaction_id' => null,
+                'balance_after' => $user->wallet->balance,
+            ]);
+
+            // ارسال نوتیفیکیشن
+            $this->notifications->create(
+                "ثبت سفارش",
+                $parentOrder
+                    ? "سفارش فرزند برای سفارش رزرو #{$parentOrder->id} در پنل ادمین ثبت شد"
+                    : (!empty($data['reservation_type'])
+                        ? "سفارش رزرو در پنل ادمین ثبت شد"
+                        : "یک سفارش در پنل ادمین ثبت شد"),
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json($order->load(['items', 'user', 'address', 'shipping']), 201);
+        });
+    }
+    public function changeStatus(Request $request, Order $order)
+    {
+        $data = $request->validate([
+            'status' => 'required|in:pending,paid,completed,canceled,returned,reserved,failed',
+        ]);
+
+        $newStatus = $data['status'];
+        $oldStatus = $order->status;
+
+        return DB::transaction(function () use ($order, $newStatus, $oldStatus) {
+
+            // ================================================================
+            // 0) بارگذاری فرزندان
+            // ================================================================
+            $order->load(['childOrders.items.variant', 'items.variant']);
+
+            // ================================================================
+            // 1) تغییر وضعیت به paid → فقط سفارش والد پرداخت می‌شود
+            // ================================================================
+            if (
+                $newStatus === 'paid'
+                && $oldStatus !== 'paid'
+                && $order->payment_status !== 'paid'
+            ) {
+                $user = $order->user;
+
+                if (!$user) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'کاربر سفارش یافت نشد',
+                    ], 422);
+                }
+
+                // ایجاد کیف پول در صورت نبود
+                if (empty($user->wallet)) {
+                    Wallet::create([
+                        'user_id' => $user->id,
+                        'balance' => 0,
+                    ]);
+                    $user->load('wallet');
+                }
+
+                // ★ فقط مبلغ سفارش والد
+                $totalAmount = $order->total;
+
+                // بررسی موجودی
+                if ($user->wallet->balance < $totalAmount) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'موجودی کیف پول کاربر کافی نیست. موجودی فعلی: '
+                            . number_format($user->wallet->balance)
+                            . ' - مبلغ سفارش: '
+                            . number_format($totalAmount),
+                    ], 422);
+                }
+
+                // کسر از کیف پول
+                $user->wallet->decrement('balance', $totalAmount);
+                $user->wallet->refresh();
+
+                // ثبت تراکنش
+                $user->wallet->transactions()->create([
+                    'type' => 'debit',
+                    'order_id' => $order->id,
+                    'amount' => $totalAmount,
+                    'description' => "پرداخت سفارش #{$order->id} توسط ادمین",
+                    'gateway_transaction_id' => null,
+                    'balance_after' => $user->wallet->balance,
+                ]);
+
+                // آپدیت فیلدهای پرداخت فقط برای والد
+                $order->payment_status = 'paid';
+                $order->payment_method = 'wallet';
+                $order->wallet_payment =  $totalAmount;
+            }
+
+            // ================================================================
+            // 2) تغییر وضعیت به canceled/failed/returned → لغو والد + فرزندان paid
+            // ================================================================
+            if (
+                in_array($newStatus, ['failed', 'canceled', 'returned'])
+                && $order->payment_status === 'paid'
+            ) {
+                $user = $order->user;
+
+                if ($user) {
+                    if (empty($user->wallet)) {
+                        Wallet::create([
+                            'user_id' => $user->id,
+                            'balance' => 0,
+                        ]);
+                        $user->load('wallet');
+                    }
+
+                    // ★ فقط فرزندانی که paid هستند + خود والد
+                    $paidChildOrders = $order->childOrders
+                        ->where('status', 'paid');
+
+                    $ordersToCancel = collect([$order])->merge($paidChildOrders);
+
+                    // محاسبه مبلغ برگشتی
+                    $refundAmount = $ordersToCancel->sum('total');
+
+                    if ($refundAmount > 0) {
+                        $user->wallet->increment('balance', $refundAmount);
+                        $user->wallet->refresh();
+
+                        $user->wallet->transactions()->create([
+                            'type' => 'credit',
+                            'order_id' => $order->id,
+                            'amount' => $refundAmount,
+                            'description' => "بازگشت مبلغ سفارش #{$order->id} و فرزندان پرداخت‌شده آن بابت تغییر وضعیت به {$newStatus}",
+                            'gateway_transaction_id' => null,
+                            'balance_after' => $user->wallet->balance,
+                        ]);
+                    }
+
+                    // برگشت موجودی محصولات + آپدیت payment_status
+                    foreach ($ordersToCancel as $o) {
+                        foreach ($o->items as $item) {
+                            $variant = $item->variant;
+                            if ($variant) {
+                                $variant->increment('stock', $item->quantity);
+                                $this->productStockService->sync($variant->product);
+                            }
+                        }
+                        $o->payment_status = 'failed';
+                        $o->save();
+                    }
+                }
+            }
+
+            // ================================================================
+            // 3) به‌روزرسانی وضعیت سفارش والد
+            // ================================================================
+            $order->status = $newStatus;
+            $order->save();
+
+            // ================================================================
+            // 4) به‌روزرسانی وضعیت فرزندان (یک سطح)
+            // ================================================================
+            $this->updateChildOrdersStatus($order, $newStatus);
+
+            // ================================================================
+            // 5) نوتیفیکیشن
+            // ================================================================
+            $this->notifications->create(
+                "تغییر وضعیت",
+                "یک سفارش در سیستم تغییر وضعیت پیدا کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            // ================================================================
+            // 6) پیامک
+            // ================================================================
+            try {
+                if ($order->user && $order->user->mobile) {
+                    $this->smsService->sendToKavenegar(
+                        'change-order-status',
+                        $order->user->mobile,
+                        $order->id,
+                        [
+                            'token20' => $order->user->getDisplayName($order->address?->receiver_name),
+                            'token10' => $order->status_label,
+                        ]
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning('SMS send failed for order #' . $order->id, [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return response()->json([
+                'message' => 'وضعیت سفارش با موفقیت تغییر کرد',
+                'order' => $order->load(['items', 'user', 'address', 'shipping', 'childOrders'])
+            ]);
+        });
+    }
+
+    /**
+     * به‌روزرسانی وضعیت تمام سفارش‌های فرزند به صورت بازگشتی
+     */
+    private function updateChildOrdersStatus(Order $parentOrder, string $status)
+    {
+        foreach ($parentOrder->childOrders as $childOrder) {
+            $childOrder->status = $status;
+            $childOrder->save();
+
+            $this->notifications->create(
+                "تغییر وضعیت سفارش فرزند",
+                "وضعیت سفارش #{$childOrder->id} به {$status} تغییر کرد",
+                "notification_order",
+                ['order' => $childOrder->id]
+            );
+        }
+    }
+    public function getPrintData(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer|exists:orders,id'
+        ]);
+
+        // استفاده از اسکوپ withAllChildren به همراه whereIn
+        $orders = Order::withAllChildren()
+            ->whereIn('id', $request->ids)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $orders
+        ]);
+    }
+
+    public function todaysOrders(Request $request)
+    {
+        $startDate = Carbon::parse('2026-09-10')->startOfDay();
+
+        $query = Order::with(['items', 'user', 'address', 'shipping', 'gatewayTransactions'])
+            ->where(function ($q) use ($startDate) {
+                $q->where(function ($sub) use ($startDate) {
+                    $sub->where('status', 'paid')
+                        ->where('created_at', '>=', $startDate);
+                })
+                    ->orWhere(function ($sub) {
+                        $sub->where('status', 'reserved')
+                            ->where('reserved_until', '<=', now());
+                    });
+            })
+            ->whereNull('parent_order_id');
+
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhere('user_id', 'like', "%{$search}%")
+                    ->orWhere('total', 'like', "%{$search}%")
+                    ->orWhere('user_note', 'like', "%{$search}%")
+                    ->orWhere('admin_note', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
+            });
+        }
+        if ($request->filled('shipping_id')) {
+            $query->where('shipping_id', $request->shipping_id);
+        }
+
+        $orders = $query->orderByDesc('created_at')->orderByDesc('id')->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'سفارشات paid از تاریخ 2026-09-10 و رزروهای منقضی شده',
+            'data' => $orders
+        ]);
+    }
+
+    public function checkout(
+        Request $request,
+    ) {
+        $user = $request->user();
+
+        // 1. اعتبارسنجی اولیه درخواست
+        $request->validate([
+            'address_id'        => 'required|exists:addresses,id',
+            'shipping_id'       => 'required|exists:shippings,id',
+            'payment_method'    => 'required|in:wallet,online',
+            'gateway'           => 'required_if:payment_method,online|string',
+            'coupon_code'       => 'nullable|string',
+            'user_note'       => 'nullable|string',
+            'reservation_type'  => 'nullable|in:none,three_days,seven_days',
+            'parent_order_id'   => 'nullable|exists:orders,id',
+        ]);
+        $user_note = $request->user_note;
+        // 2. بارگذاری آدرس انتخابی کاربر
+        $address = Address::with(['city', 'province'])
+            ->where('user_id', $user->id)
+            ->findOrFail($request->address_id);
+
+        // 3. گرفتن سبد خرید کاربر
+        $cartItems = Cart::with(['variant', 'variant.product'])
+            ->where('user_id', $user->id)
+            ->get();
+
+        if ($cartItems->isEmpty()) {
+            return response()->json(['message' => 'سبد خرید خالی است'], 422);
+        }
+
+        // 4. جمع زدن subtotal
+        $subtotal = $cartItems->sum(fn($item) => $item->price_final * $item->quantity);
+
+        // 5. بررسی و محاسبه تخفیف با CouponService
+        $discountAmount = 0;
+        $coupon = null;
+
+        if ($request->filled('coupon_code')) {
+            $couponResult = (new CouponService)
+                ->validateAndCalculate($request->coupon_code, $subtotal, $user->id);
+
+            if (!$couponResult['success']) {
+                return response()->json(['message' => $couponResult['message']], 422);
+            }
+            $discountAmount = $couponResult['discount'];
+            $coupon = $couponResult['coupon'];
+        }
+
+        // 6. محاسبه هزینه حمل و نقل
+        $shippingMethod = Shipping::findOrFail($request->shipping_id);
+
+        $reservationOrderId = $request->get('parent_order_id');
+        $reservationOrder = null;
+        $shippingCost = 0;
+        if ($reservationOrderId) {
+            $reservationOrder = Order::where('id', $reservationOrderId)
+                ->where('user_id', $user->id)
+                ->where('status', 'reserved')
+                ->where('reserved_until', '>', now())
+                ->with(['shipping', 'address'])
+                ->first();
+        }
+        if ($reservationOrder) {
+            $selectdShipping = Shipping::find($request->shipping_id);
+            if (!$selectdShipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = $selectdShipping->cost - $reservationOrder->shipping_cost;
+        } else {
+
+            $shipping = Shipping::find($request->shipping_id);
+
+            if (!$shipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = (new ShippingService)->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+        }
+        // 7. جمع نهایی
+        $total = $subtotal - $discountAmount + $shippingCost;
+
+        // 8. بررسی موجودی کیف پول
+        $walletBalance = $user->wallet?->balance ?? 0;
+        $fromWallet = 0;
+        $toPayOnline = $total;
+
+        if ($request->payment_method === 'wallet') {
+            if ($walletBalance >= $total) {
+                $fromWallet = $total;
+                $toPayOnline = 0;
+            } else {
+                $fromWallet = $walletBalance;
+                $toPayOnline = $total - $walletBalance;
+            }
+        }
+
+        // 9. تعیین نوع رزرو و تاریخ انقضا
+        $reservationType = $request->input('reservation_type', 'none');
+        $reservedUntil = null;
+
+        if ($reservationType !== 'none') {
+            $days = $reservationType === 'three_days' ? 3 : 7;
+            $reservedUntil = now()->addDays($days);
+        }
+
+        // 10. شروع تراکنش با قفل کامل
+        return DB::transaction(function () use (
+            $user,
+            $cartItems,
+            $subtotal,
+            $discountAmount,
+            $shippingCost,
+            $total,
+            $fromWallet,
+            $toPayOnline,
+            $request,
+            $coupon,
+            $shippingMethod,
+            $address,
+            $user_note,
+            $reservationType,
+            $reservedUntil
+        ) {
+            // ================================================================
+            // مرحله 1: قفل کردن و بررسی موجودی همه تنوع‌ها
+            // ================================================================
+
+            // گرفتن ID همه تنوع‌های موجود در سبد خرید
+            $variantIds = $cartItems->pluck('variant.id')->unique()->toArray();
+
+            // ★ قفل کردن همه تنوع‌ها برای جلوگیری از خرید همزمان
+            $variants = ProductVariant::whereIn('id', $variantIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+
+            // بررسی موجودی برای هر آیتم
+            foreach ($cartItems as $item) {
+                $variant = $variants->get($item->variant->id);
+
+                // اگر تنوع وجود نداشت
+                if (!$variant) {
+                    throw new \Exception("تنوع محصول یافت نشد: {$item->variant->id}");
+                }
+
+                // اگر موجودی کافی نبود
+                if ($variant->stock < $item->quantity) {
+                    throw new \Exception(
+                        "موجودی {$variant->product->title} کافی نیست. " .
+                            "موجودی فعلی: {$variant->stock} - درخواستی: {$item->quantity}"
+                    );
+                }
+            }
+
+            // ================================================================
+            // مرحله 2: بررسی parent_order (اگر وجود داشته باشد)
+            // ================================================================
+
+            // اگر parent_order_id وجود داشته باشد، سفارش را به عنوان فرزند ثبت می‌کنیم
+            $parentOrderId = $request->input('parent_order_id');
+
+            // اعتبارسنجی parent_order در صورتی که وجود داشته باشد
+            if ($parentOrderId) {
+                $parentOrder = Order::where('id', $parentOrderId)
+                    ->where('user_id', $user->id)
+                    ->first();
+
+                if (!$parentOrder) {
+                    throw new \Exception('سفارش والد معتبر نیست');
+                }
+
+                // بررسی اینکه آیا سفارش والد هنوز قابل اضافه کردن آیتم هست
+                if (!in_array($parentOrder->status, ['pending', 'reserved'])) {
+                    throw new \Exception('سفارش والد قابل ویرایش نیست');
+                }
+            }
+
+            // ================================================================
+            // مرحله 3: ایجاد سفارش
+            // ================================================================
+
+            $order = Order::create([
+                'user_id' => $user->id,
+                'address_id' => $address->id,
+                'shipping_id' => $shippingMethod->id,
+                'subtotal' => $subtotal,
+                'source' => 'website',
+                'coupon_id' => null,
+                'discount_amount' => $discountAmount,
+                'shipping_cost' => $shippingCost,
+                'total' => $total,
+                'user_note' => $user_note,
+                'wallet_payment' => $fromWallet,
+                'online_payment' => $toPayOnline,
+                'payment_method' => $request->payment_method,
+                'payment_status' => $toPayOnline > 0 ? 'pending' : 'paid',
+                'status' => $reservationType !== 'none' ? 'reserved' : ($toPayOnline > 0 ? 'pending' : 'paid'),
+                'reservation_type' => $reservationType,
+                'reserved_until' => $reservedUntil,
+                'parent_order_id' => $parentOrderId,
+            ]);
+
+            // ================================================================
+            // مرحله 4: ثبت آیتم‌ها و کم کردن موجودی
+            // ================================================================
+
+            foreach ($cartItems as $item) {
+                // گرفتن تنوع قفل شده
+                $variant = $variants->get($item->variant->id);
+
+                // ثبت آیتم سفارش
+                $order->items()->create([
+                    'product_id' => $variant->product_id,
+                    'product_variant_id' => $variant->id,
+                    'quantity' => $item->quantity,
+                    'price' => $item->price_final,
+                ]);
+                // ★ کم کردن موجودی از روی مدل قفل شده
+                $variant->decrement('stock', $item->quantity);
+
+                // ★ همگام‌سازی موجودی محصول اصلی
+                $this->productStockService->sync($variant->product);
+            }
+
+            // ================================================================
+            // مرحله 5: اعمال کوپن (اگر وجود داشته باشد)
+            // ================================================================
+
+            if ($coupon) {
+                (new CouponService)
+                    ->applyCoupon($coupon, $user->id);
+                $order->coupon_id = $coupon->id;
+                $order->save();
+            }
+
+            // ================================================================
+            // مرحله 6: پرداخت از کیف پول (اگر مبلغی از کیف پول استفاده شود)
+            // ================================================================
+
+            if ($fromWallet > 0) {
+                $this->walletService->withdraw(
+                    wallet: $user->wallet,
+                    amount: $fromWallet,
+                    description: "پرداخت سفارش #{$order->id}",
+                    order: $order,
+                );
+            }
+
+            // ================================================================
+            // مرحله 7: پاک کردن سبد خرید اگر پرداخت کلا از کیف پول بوده
+            // ================================================================
+            if ($toPayOnline === 0)
+                Cart::where('user_id', $user->id)->delete();
+
+            // ================================================================
+            // مرحله 8: پرداخت آنلاین (اگر نیاز باشد)
+            // ================================================================
+
+            if ($toPayOnline > 0) {
+                $gateway = $request->gateway ?? config('payment.default');
+
+                try {
+                    $gatewayUrl = $this->paymentService->pay(
+                        payable: $order,
+                        user: $user,
+                        amount: $toPayOnline,
+                        gateway: $gateway,
+                    );
+                } catch (\Exception $e) {
+                    // اگر درگاه خطا داد، تراکنش Rollback می‌شود
+                    throw new \Exception("خطا در اتصال به درگاه پرداخت: " . $e->getMessage());
+                }
+
+                $this->notifications->create(
+                    "سفارش در انتظار پرداخت",
+                    "یک سفارش برای پرداخت به درگاه منتقل شد",
+                    "notification_order",
+                    [
+                        'order' => $order->id,
+                    ]
+                );
+
+                return response()->json([
+                    'order' => $order->load('items'),
+                    'status' => 'gateway',
+                    'gateway_url' => $gatewayUrl,
+                    'reservation_type' => $reservationType,
+                    'reserved_until' => $reservedUntil,
+                ], 201);
+            }
+
+            // ================================================================
+            // مرحله 9: سفارش رزرو (پرداخت کامل شده با کیف پول یا نیازی به پرداخت نیست)
+            // ================================================================
+
+            if ($reservationType !== 'none') {
+                return response()->json([
+                    'order' => $order->load('items'),
+                    'status' => 'reserved',
+                    'message' => $reservedUntil
+                        ? "سفارش با موفقیت رزرو شد. تا تاریخ {$reservedUntil->format('Y-m-d H:i:s')} فرصت پرداخت دارید."
+                        : "سفارش با موفقیت رزرو شد.",
+                    'reservation_type' => $reservationType,
+                    'reserved_until' => $reservedUntil,
+                ], 201);
+            }
+
+            // ================================================================
+            // مرحله 10: تکمیل سفارش با کیف پول (برای سفارش‌های عادی)
+            // ================================================================
+
+            $this->paymentCompletionService->completeWalletOrder($order);
+
+            return response()->json([
+                'order' => $order->load('items'),
+                'status' => 'wallet',
+                'message' => 'سفارش با موفقیت ثبت شد.',
+            ], 201);
+        }); // پایان تراکنش
+    }
+    public function checkoutSummary(Request $request)
+    {
+        $user = $request->user();
+
+        // --------------------------------------------------------
+        // 1) دریافت سبد خرید
+        // --------------------------------------------------------
+        $cartItems = Cart::where('user_id', $user->id)
+            ->with(['variant.product'])
+            ->get();
+
+        if ($cartItems->isEmpty()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سبد خرید خالی است'
+            ], 400);
+        }
+
+        // --------------------------------------------------------
+        // 2) انتخاب آدرس
+        // --------------------------------------------------------
+        $address = null;
+
+        if ($request->address_id) {
+            $address = Address::where('id', $request->address_id)
+                ->where('user_id', $user->id)
+                ->first();
+        }
+
+        if (!$address) {
+            $address = Address::where('user_id', $user->id)->first();
+        }
+
+        if (!$address) {
+            return response()->json([
+                'success' => false,
+                'message' => 'هیچ آدرسی برای کاربر ثبت نشده است'
+            ], 400);
+        }
+
+        $provinceId = $address->province_id;
+        $cityId     = $address->city_id;
+
+        // --------------------------------------------------------
+        // 3) محاسبه subtotal + product discounts (نسخه جدید)
+        // --------------------------------------------------------
+        $subtotal = 0;
+        $productDiscount = 0;
+
+        foreach ($cartItems as $item) {
+
+            $subtotal += $item->price_original * $item->quantity;
+
+            // مقدار تخفیف محصول = قیمت اصلی - قیمت بعد تخفیف
+            if ($item->price_final != $item->price_original) {
+                $discountPerItem = $item->price_original - $item->price_final;
+
+                if ($discountPerItem > 0) {
+                    $productDiscount += ($discountPerItem * $item->quantity);
+                }
+            }
+        }
+
+
+        // --------------------------------------------------------
+        // 4) محاسبه هزینه حمل
+        // --------------------------------------------------------
+        $reservationOrderId = $request->get('reservation_order_id');
+        $reservationOrder = null;
+        $shippingCost = 0;
+        if ($reservationOrderId) {
+            $reservationOrder = Order::where('id', $reservationOrderId)
+                ->where('user_id', $user->id)
+                ->where('status', 'reserved')
+                ->where('reserved_until', '>', now())
+                ->with(['shipping', 'address'])
+                ->first();
+        }
+        if ($reservationOrder) {
+            $shipping = Shipping::find($request->shipping_id);
+            if (!$shipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+            $shippingCost = $shipping->cost - $reservationOrder->shipping_cost;
+        } else {
+
+            $shipping = Shipping::find($request->shipping_id);
+
+            if (!$shipping) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'روش حمل معتبر نیست'
+                ], 400);
+            }
+
+            $shippingCost = (new ShippingService)->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+        }
+
+
+        // --------------------------------------------------------
+        // 5) محاسبه تخفیف کپن
+        // --------------------------------------------------------
+        $couponDiscount = 0;
+
+        if ($request->coupon_code) {
+            $coupon = Coupon::where('code', $request->coupon_code)
+                ->where('status', true)
+                ->where('start_date', '<=', now())
+                ->where('end_date', '>=', now())
+                ->first();
+
+            if ($coupon && $subtotal >= $coupon->min_purchase) {
+
+                if ($coupon->type === 'percent') {
+                    $couponDiscount = ($subtotal * $coupon->value) / 100;
+                } else {
+                    $couponDiscount = $coupon->value;
+                }
+
+                if (
+                    $coupon->max_discount &&
+                    $couponDiscount > $coupon->max_discount
+                ) {
+                    $couponDiscount = $coupon->max_discount;
+                }
+            }
+        }
+
+        // --------------------------------------------------------
+        // 6) مبلغ پرداختی
+        // --------------------------------------------------------
+        $payable = max(0, $subtotal - $productDiscount - $couponDiscount + $shippingCost);
+
+        return response()->json([
+            'success' => true,
+            'reservationOrder' => $reservationOrder,
+            'summary' => [
+                'subtotal'          => (int)$subtotal,
+                'product_discount'  => (int)$productDiscount,
+                'shipping_cost'     => (int)$shippingCost,
+                'coupon_discount'   => (int)$couponDiscount,
+                'payable_amount'    => (int)$payable,
+            ],
+
+            'address' => $address,
+            'wallet' => $user->wallet,
+            'shipping_method' => [
+                'id' => $shipping->id,
+                'name' => $shipping->title,
+                'cost' => $shippingCost
+            ],
+            'coupon' => $request->coupon_code ?? null,
+        ]);
+    }
+    public function userDashboardOrders(Request $request)
+    {
+        $user = $request->user();
+
+        $query = Order::with([
+            'items.product',
+            'address',
+            'shipping',
+            'childOrders' => function ($q) {
+                $q->with(['items.product', 'address', 'shipping']);
+            }
+        ])
+            ->where('user_id', $user->id)
+            ->whereNull('parent_order_id'); // فقط سفارش‌های والد
+
+        // فیلتر وضعیت سفارش
+        if ($status = $request->get('status')) {
+            $query->where('status', $status);
+        }
+
+        // فیلتر وضعیت پرداخت
+        if ($paymentStatus = $request->get('payment_status')) {
+            $query->where('payment_status', $paymentStatus);
+        }
+
+        // فیلتر تاریخ از
+        if ($fromDate = $request->get('from_date')) {
+            $query->whereDate('created_at', '>=', $fromDate);
+        }
+
+        // فیلتر تاریخ تا
+        if ($toDate = $request->get('to_date')) {
+            $query->whereDate('created_at', '<=', $toDate);
+        }
+
+        // مرتب‌سازی اختیاری
+        $query->orderBy('created_at', 'desc');
+
+        // Pagination یا همه
+        $orders = $query->get();
+
+        return response()->json([
+            'orders' => $orders,
+        ]);
+    }
+    public function userDashboardOrderDetail(Request $request, $orderId)
+    {
+        $user = $request->user();
+
+        // پیدا کردن سفارش با تمام روابط
+        $order = Order::with([
+            'items.product',
+            'items.variant.values.attribute',
+            'address.province',
+            'address.city',
+            'shipping',
+            'user',
+            'cardTransferReceipt', // اضافه کردن رابطه رسید
+            'cardTransferReceipt.admin', // اطلاعات ادمین تایید کننده
+        ])->where('id', $orderId)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (!$order) {
+            return response()->json([
+                'message' => 'سفارش پیدا نشد یا دسترسی ندارید.'
+            ], 404);
+        }
+
+        // اضافه کردن فیلدهای محاسباتی
+        $orderData = $order->toArray();
+
+        // اضافه کردن اطلاعات تکمیلی رسید
+        if ($order->cardTransferReceipt) {
+            $orderData['receipt'] = [
+                'id' => $order->cardTransferReceipt->id,
+                'image_url' => $order->cardTransferReceipt->image_path,
+                'tracking_code' => $order->cardTransferReceipt->tracking_code,
+                'status' => $order->cardTransferReceipt->status,
+                'status_label' => $order->cardTransferReceipt->status_label,
+                'description' => $order->cardTransferReceipt->description,
+                'admin_name' => $order->cardTransferReceipt->admin?->full_name ?? null,
+                'created_at' => $order->cardTransferReceipt->created_at,
+                'updated_at' => $order->cardTransferReceipt->updated_at,
+            ];
+        }
+
+        // اضافه کردن وضعیت‌های سفارش
+        $orderData['status_label'] = $order->status_label;
+        $orderData['payment_status_label'] = $order->payment_status_label;
+
+        // زمان باقی‌مونده برای آپلود رسید (فقط برای وضعیت card_transfer_pending)
+        if ($order->status === 'card_transfer_pending') {
+            $expiresAt = $order->created_at->addMinutes(15);
+            $orderData['receipt_expires_at'] = $expiresAt->toISOString();
+            $orderData['receipt_remaining_seconds'] = max(0, now()->diffInSeconds($expiresAt, false));
+        }
+
+        return response()->json([
+            'order' => $orderData,
+        ]);
+    }
+    public function getActiveReservations()
+    {
+        $user = auth()->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'کاربر احراز هویت نشده است'
+            ], 401);
+        }
+
+        $reservations = Order::where('user_id', $user->id)
+            ->where('status', 'reserved')
+            ->where('payment_status', 'paid')
+            ->where('reserved_until', '>', now())
+            ->with(['address', 'shipping', 'items.product', 'items.variant'])
+            ->orderBy('reserved_until', 'asc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $reservations
+        ]);
+    }
+    public function getUserReservations(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|exists:users,id'
+        ]);
+
+        $reservations = Order::where('user_id', $request->user_id)
+            ->where('status', 'reserved')
+            ->where('reserved_until', '>', now())
+            ->with(['address', 'shipping', 'items.product', 'items.variant'])
+            ->orderBy('reserved_until', 'asc')
+            ->get()
+            ->map(function ($order) {
+                return [
+                    'order_number' => $order->id,
+                    'receiver_name' => $order->address->receiver_name ?? 'نامشخص',
+                    'shipping_method' => $order->shipping->title ?? 'نامشخص',
+                    'shipping_id' => $order->shipping_id,
+                    'shipping_cost' => $order->shipping_cost,
+                    'address_id' => $order->address_id,
+                    'total' => $order->total,
+                    'reserved_until' => $order->reserved_until,
+                    'items' => $order->items->map(function ($item) {
+                        return [
+                            'id' => $item->id,
+                            'product_name' => $item->product->title ?? 'نامشخص',
+                            'variant_name' => $item->variant->title ?? 'نامشخص',
+                            'quantity' => $item->quantity,
+                            'price' => $item->price,
+                        ];
+                    })
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'data' => $reservations
+        ]);
+    }
+    public function getOrderForEdit(Order $order)
+    {
+        // بررسی اینکه سفارش قابل ویرایش باشد
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $order->load([
+            'items.product',
+            'items.variant.values.attribute',
+            'address.province',
+            'address.city',
+            'shipping',
+            'user',
+            'user.addresses' => function ($query) {
+                $query->with(['province', 'city']);
+            }
+        ]);
+
+        // محاسبه هزینه حمل برای آدرس فعلی
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $order->shipping_id,
+            $order->address->province_id,
+            $order->address->city_id,
+            $order->subtotal
+        );
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'order' => $order,
+                'shipping_cost' => $shippingCost,
+                'shippings' => $this->getAvailableShippings($order->address, $order->subtotal, $order->items->sum('quantity')),
+                'addresses' => $order->user->addresses
+            ]
+        ]);
+    }
+    private function getAvailableShippings($address, $subtotal, $quantity)
+    {
+        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $available = [];
+
+        foreach ($shippings as $shipping) {
+            $cost = (new ShippingService)->calculateCost(
+                $shipping->id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal,
+                $quantity
+            );
+
+            if ($cost > 0 || $shipping->conditions->isEmpty()) {
+                $available[] = [
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'cost' => $cost > 0 ? $cost : (int) $shipping->cost,
+                ];
+            }
+        }
+
+        return $available;
+    }
+    /**
+     * ویرایش سفارش
+     */
+    public function updateOrder(Request $request, Order $order)
+    {
+        // بررسی اینکه سفارش قابل ویرایش باشد
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $data = $request->validate([
+            'address_id' => 'required|exists:addresses,id',
+            'shipping_id' => 'required|exists:shippings,id',
+            'items' => 'required|array|min:1',
+            'items.*.id' => 'nullable|exists:order_items,id',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.product_variant_id' => 'required|exists:product_variants,id',
+            'items.*.quantity' => 'required|integer|min:1',
+            'items.*.price' => 'required|numeric|min:0',
+            'discount_amount' => 'nullable|numeric|min:0',
+            'reservation_type' => 'nullable|in:three_days,seven_days',
+        ]);
+
+        return DB::transaction(function () use ($data, $order) {
+            $user = $order->user;
+            $oldAddressId = $order->address_id;
+            $oldShippingId = $order->shipping_id;
+
+            // 1. به‌روزرسانی آدرس و روش حمل
+            $order->address_id = $data['address_id'];
+            $order->shipping_id = $data['shipping_id'];
+
+            // 2. محاسبه مجدد هزینه‌ها
+            $subtotal = 0;
+            $itemsData = [];
+
+            // محاسبه ساب‌توتال از آیتم‌های جدید
+            foreach ($data['items'] as $item) {
+                $subtotal += $item['price'] * $item['quantity'];
+                $itemsData[] = $item;
+            }
+
+            // محاسبه هزینه حمل
+            $address = Address::with(['province', 'city'])
+                ->findOrFail($data['address_id']);
+
+            $shippingCost = (new ShippingService)->calculateCost(
+                $data['shipping_id'],
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+
+            // 3. بررسی موجودی محصولات (برای آیتم‌های جدید یا تغییر یافته)
+            foreach ($data['items'] as $item) {
+                // اگر آیتم جدید است یا تعداد آن تغییر کرده
+                if (!isset($item['id']) || $item['id'] === null) {
+                    $variant = ProductVariant::findOrFail($item['product_variant_id']);
+                    if ($variant->stock < $item['quantity']) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "موجودی {$variant->product->title} کافی نیست"
+                        ], 422);
+                    }
+                } else {
+                    // بررسی تغییرات تعداد
+                    $oldItem = $order->items()->where('id', $item['id'])->first();
+                    if ($oldItem) {
+                        $quantityDiff = $item['quantity'] - $oldItem->quantity;
+                        if ($quantityDiff > 0) {
+                            $variant = ProductVariant::findOrFail($item['product_variant_id']);
+                            if ($variant->stock < $quantityDiff) {
+                                return response()->json([
+                                    'success' => false,
+                                    'message' => "موجودی {$variant->product->title} کافی نیست"
+                                ], 422);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. محاسبه تخفیف
+            $discountAmount = $data['discount_amount'] ?? 0;
+
+            // 5. محاسبه کل نهایی
+            $total = $subtotal - $discountAmount + $shippingCost;
+
+            // 6. بررسی موجودی کیف پول (اگر سفارش قبلاً پرداخت شده)
+            if ($order->payment_status === 'paid') {
+                $walletBalance = $user->wallet?->balance ?? 0;
+                $difference = $total - $order->total;
+
+                if ($difference > 0) {
+                    // اگر مبلغ جدید بیشتر شده، باید مابه‌التفاوت از کیف پول کم شود
+                    if ($walletBalance < $difference) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+
+                    // کم کردن مابه‌التفاوت از کیف پول
+                    $user->wallet()->decrement('balance', $difference);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $difference,
+                        'description' => "ما به التفاوت ویرایش سفارش #{$order->id}",
+                    ]);
+                } elseif ($difference < 0) {
+                    // اگر مبلغ جدید کمتر شده، مابه‌التفاوت به کیف پول برگردانده شود
+                    $user->wallet()->increment('balance', abs($difference));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($difference),
+                        'description' => "بازگشت مابه‌التفاوت ویرایش سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            // 7. به‌روزرسانی فیلدهای سفارش
+            $order->subtotal = $subtotal;
+            $order->discount_amount = $discountAmount;
+            $order->shipping_cost = $shippingCost;
+            $order->total = $total;
+
+            // اگر روش حمل تغییر کرده و سفارش رزرو است
+            if ($oldShippingId != $data['shipping_id'] && $order->status === 'reserved') {
+                $order->shipping_cost = $shippingCost;
+            }
+
+            $order->save();
+
+            // 8. به‌روزرسانی آیتم‌ها
+            $existingItemIds = [];
+            $deletedItemIds = [];
+
+            foreach ($data['items'] as $itemData) {
+                if (isset($itemData['id']) && $itemData['id'] !== null) {
+                    // به‌روزرسانی آیتم موجود
+                    $orderItem = $order->items()->where('id', $itemData['id'])->first();
+                    if ($orderItem) {
+                        // برگرداندن موجودی قبلی
+                        $oldVariant = ProductVariant::find($orderItem->product_variant_id);
+                        if ($oldVariant) {
+                            $oldVariant->increment('stock', $orderItem->quantity);
+                            $this->productStockService->sync($oldVariant->product);
+                        }
+
+                        // به‌روزرسانی آیتم
+                        $orderItem->update([
+                            'product_id' => $itemData['product_id'],
+                            'product_variant_id' => $itemData['product_variant_id'],
+                            'quantity' => $itemData['quantity'],
+                            'price' => $itemData['price'],
+                        ]);
+
+                        // کم کردن موجودی جدید
+                        $newVariant = ProductVariant::find($itemData['product_variant_id']);
+                        if ($newVariant) {
+                            $newVariant->decrement('stock', $itemData['quantity']);
+                            $this->productStockService->sync($newVariant->product);
+                        }
+
+                        $existingItemIds[] = $orderItem->id;
+                    }
+                } else {
+                    // ایجاد آیتم جدید
+                    $newItem = $order->items()->create([
+                        'product_id' => $itemData['product_id'],
+                        'product_variant_id' => $itemData['product_variant_id'],
+                        'quantity' => $itemData['quantity'],
+                        'price' => $itemData['price'],
+                    ]);
+
+                    // کم کردن موجودی
+                    $variant = ProductVariant::find($itemData['product_variant_id']);
+                    if ($variant) {
+                        $variant->decrement('stock', $itemData['quantity']);
+                        $this->productStockService->sync($variant->product);
+                    }
+
+                    $existingItemIds[] = $newItem->id;
+                }
+            }
+
+            // 9. حذف آیتم‌هایی که در درخواست نیستند
+            $itemsToDelete = $order->items()->whereNotIn('id', $existingItemIds)->get();
+            foreach ($itemsToDelete as $itemToDelete) {
+                // برگرداندن موجودی
+                $variant = ProductVariant::find($itemToDelete->product_variant_id);
+                if ($variant) {
+                    $variant->increment('stock', $itemToDelete->quantity);
+                    $this->productStockService->sync($variant->product);
+                }
+                $itemToDelete->delete();
+            }
+
+            // 10. ارسال نوتیفیکیشن
+            $this->notifications->create(
+                "ویرایش سفارش",
+                "سفارش #{$order->id} توسط ادمین ویرایش شد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'سفارش با موفقیت ویرایش شد',
+                'data' => $order->load(['items.product', 'items.variant', 'address', 'shipping'])
+            ]);
+        });
+    }
+
+    /**
+     * محاسبه هزینه حمل برای ویرایش سفارش
+     */
+    public function calculateShippingForEdit(Request $request, Order $order)
+    {
+        $request->validate([
+            'address_id' => 'required|exists:addresses,id',
+            'shipping_id' => 'nullable|exists:shippings,id',
+            'items' => 'required|array',
+            'items.*.price' => 'required|numeric|min:0',
+            'items.*.quantity' => 'required|integer|min:1',
+            'discount_amount' => 'nullable|numeric|min:0',
+        ]);
+
+        // محاسبه ساب‌توتال جدید
+        $subtotal = 0;
+        foreach ($request->items as $item) {
+            $subtotal += $item['price'] * $item['quantity'];
+        }
+
+        $address = Address::with(['province', 'city'])->findOrFail($request->address_id);
+        $discountAmount = $request->discount_amount ?? 0;
+
+        // اگر shipping_id ارسال نشده، از shipping فعلی سفارش استفاده کن
+        $shippingId = $request->shipping_id ?? $order->shipping_id;
+
+        // محاسبه هزینه حمل
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $shippingId,
+            $address->province_id,
+            $address->city_id,
+            $subtotal
+        );
+
+        // دریافت لیست روش‌های حمل موجود
+        $shippings = $this->getAvailableShippings($address, $subtotal, array_sum(array_column($request->items, 'quantity')));
+
+        $total = $subtotal - $discountAmount + $shippingCost;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'subtotal' => $subtotal,
+                'shipping_cost' => $shippingCost,
+                'discount_amount' => $discountAmount,
+                'total' => $total,
+                'shippings' => $shippings,
+                'selected_shipping_id' => $shippingId
+            ]
+        ]);
+    }
+    public function getUserAddresses(Order $order)
+    {
+        $addresses = $order->user->addresses()->with(['province', 'city'])->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $addresses
+        ]);
+    }
+    public function changeOrderAddress(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'address_id' => 'required|exists:addresses,id'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $newAddress = Address::with(['province', 'city'])->findOrFail($request->address_id);
+            $oldAddressId = $order->address_id;
+
+            // به‌روزرسانی آدرس
+            $order->address_id = $request->address_id;
+
+            // محاسبه مجدد هزینه حمل با آدرس جدید
+            $shippingService = new ShippingService();
+            $newShippingCost = $shippingService->calculateCost(
+                $order->shipping_id,
+                $newAddress->province_id,
+                $newAddress->city_id,
+                $order->subtotal
+            );
+
+            // محاسبه تفاوت هزینه حمل
+            $shippingDiff = $newShippingCost - $order->shipping_cost;
+
+            // به‌روزرسانی هزینه حمل
+            $order->shipping_cost = $newShippingCost;
+
+            // به‌روزرسانی کل سفارش
+            $order->total = $order->subtotal - $order->discount_amount + $newShippingCost;
+            $order->save();
+
+            // مدیریت مابه‌التفاوت کیف پول (اگر سفارش پرداخت شده باشد)
+            if ($order->payment_status === 'paid' && $shippingDiff != 0) {
+                $user = $order->user;
+                $walletBalance = $user->wallet?->balance ?? 0;
+
+                if ($shippingDiff > 0) {
+                    // افزایش هزینه - باید از کیف پول کم شود
+                    if ($walletBalance < $shippingDiff) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+                    $user->wallet()->decrement('balance', $shippingDiff);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $shippingDiff,
+                        'description' => "ما به التفاوت تغییر آدرس سفارش #{$order->id}",
+                    ]);
+                } else {
+                    // کاهش هزینه - به کیف پول اضافه شود
+                    $user->wallet()->increment('balance', abs($shippingDiff));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($shippingDiff),
+                        'description' => "بازگشت مابه‌التفاوت تغییر آدرس سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            // ارسال نوتیفیکیشن
+            $this->notifications->create(
+                "تغییر آدرس سفارش",
+                "آدرس سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آدرس سفارش با موفقیت تغییر کرد',
+                'data' => $order->load(['address', 'shipping'])
+            ]);
+        });
+    }
+    public function getAvailableShippingsForOrder(Request $request, Order $order)
+    {
+        $address = $order->address;
+        $subtotal = $order->subtotal;
+        $quantity = $order->items->sum('quantity');
+
+        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $available = [];
+
+        foreach ($shippings as $shipping) {
+            $cost = (new ShippingService)->calculateCost(
+                $shipping->id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal,
+                $quantity
+            );
+
+            if ($cost > 0 || $shipping->conditions->isEmpty()) {
+                $available[] = [
+                    'id' => $shipping->id,
+                    'name' => $shipping->title,
+                    'description' => $shipping->description,
+                    'cost' => $cost > 0 ? $cost : (int) $shipping->cost,
+                    'is_current' => $shipping->id == $order->shipping_id
+                ];
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $available
+        ]);
+    }
+    public function changeOrderShipping(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'shipping_id' => 'required|exists:shippings,id'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $newShipping = Shipping::findOrFail($request->shipping_id);
+            $address = $order->address;
+
+            // محاسبه هزینه حمل جدید
+            $shippingService = new ShippingService();
+            $newShippingCost = $shippingService->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $order->subtotal
+            );
+
+            $shippingDiff = $newShippingCost - $order->shipping_cost;
+
+            // به‌روزرسانی روش حمل و هزینه
+            $order->shipping_id = $request->shipping_id;
+            $order->shipping_cost = $newShippingCost;
+            $order->total = $order->subtotal - $order->discount_amount + $newShippingCost;
+            $order->save();
+
+            // مدیریت مابه‌التفاوت کیف پول
+            if ($order->payment_status === 'paid' && $shippingDiff != 0) {
+                $user = $order->user;
+                $walletBalance = $user->wallet?->balance ?? 0;
+
+                if ($shippingDiff > 0) {
+                    if ($walletBalance < $shippingDiff) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'موجودی کیف پول برای مابه‌التفاوت کافی نیست'
+                        ], 422);
+                    }
+                    $user->wallet()->decrement('balance', $shippingDiff);
+                    $user->wallet->transactions()->create([
+                        'type' => 'debit',
+                        'amount' => $shippingDiff,
+                        'description' => "ما به التفاوت تغییر روش حمل سفارش #{$order->id}",
+                    ]);
+                } else {
+                    $user->wallet()->increment('balance', abs($shippingDiff));
+                    $user->wallet->transactions()->create([
+                        'type' => 'credit',
+                        'amount' => abs($shippingDiff),
+                        'description' => "بازگشت مابه‌التفاوت تغییر روش حمل سفارش #{$order->id}",
+                    ]);
+                }
+            }
+
+            $this->notifications->create(
+                "تغییر روش حمل",
+                "روش حمل سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'روش حمل سفارش با موفقیت تغییر کرد',
+                'data' => $order->load(['address', 'shipping'])
+            ]);
+        });
+    }
+    public function changeOrderReservationType(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'reservation_type' => 'nullable|in:none,three_days,seven_days'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            $reservationType =  $request->reservation_type;
+
+            // اگر سفارش رزرو شده بود و به عادی تبدیل می‌شود
+            if ($order->status === 'reserved' && $reservationType === "none") {
+                $order->status = 'paid';
+                $order->reserved_until = null;
+                $order->created_at = now();
+            }
+            // اگر سفارش عادی بود و به رزرو تبدیل می‌شود
+            elseif ($order->status !== 'reserved' && $reservationType !== "none") {
+                $order->status = 'reserved';
+                $days = $reservationType === 'three_days' ? 3 : 7;
+                $order->reserved_until = now()->addDays($days);
+            }
+            // اگر نوع رزرو تغییر می‌کند
+            elseif ($order->status === 'reserved' && $reservationType !== "none") {
+                $days = $reservationType === 'three_days' ? 3 : 7;
+                $order->reserved_until = now()->addDays($days);
+            }
+
+            $order->reservation_type = $reservationType;
+            $order->save();
+
+            $this->notifications->create(
+                "تغییر نوع سفارش",
+                "نوع سفارش #{$order->id} توسط ادمین تغییر کرد",
+                "notification_order",
+                ['order' => $order->id]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'نوع سفارش با موفقیت تغییر کرد',
+                'data' => $order
+            ]);
+        });
+    }
+    public function addOrderItem(Request $request, Order $order)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'product_variant_id' => 'required|exists:product_variants,id',
+            'quantity' => 'required|integer|min:1',
+            'price' => 'required|numeric|min:0'
+        ]);
+
+        return DB::transaction(function () use ($request, $order) {
+            // بررسی موجودی
+            $variant = ProductVariant::findOrFail($request->product_variant_id);
+            if ($variant->stock < $request->quantity) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "موجودی {$variant->product->title} کافی نیست"
+                ], 422);
+            }
+
+            // ایجاد آیتم جدید
+            $item = $order->items()->create([
+                'product_id' => $request->product_id,
+                'product_variant_id' => $request->product_variant_id,
+                'quantity' => $request->quantity,
+                'price' => $request->price
+            ]);
+
+            // کم کردن موجودی
+            $variant->decrement('stock', $request->quantity);
+            $this->productStockService->sync($variant->product);
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت اضافه شد',
+                'data' => $item
+            ]);
+        });
+    }
+    public function removeOrderItem(Request $request, Order $order, $itemId)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        return DB::transaction(function () use ($order, $itemId) {
+            $item = $order->items()->findOrFail($itemId);
+
+            // برگرداندن موجودی
+            $variant = ProductVariant::find($item->product_variant_id);
+            if ($variant) {
+                $variant->increment('stock', $item->quantity);
+                $this->productStockService->sync($variant->product);
+            }
+
+            $item->delete();
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت حذف شد'
+            ]);
+        });
+    }
+
+    /**
+     * به‌روزرسانی آیتم سفارش
+     */
+    public function updateOrderItem(Request $request, Order $order, $itemId)
+    {
+        // بررسی قابلیت ویرایش
+        if (in_array($order->status, ['completed', 'canceled', 'shipped'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'سفارش قابل ویرایش نیست'
+            ], 422);
+        }
+
+        $request->validate([
+            'quantity' => 'required|integer|min:1',
+            'price' => 'required|numeric|min:0'
+        ]);
+
+        return DB::transaction(function () use ($request, $order, $itemId) {
+            $item = $order->items()->findOrFail($itemId);
+
+            // بررسی تغییر تعداد
+            $quantityDiff = $request->quantity - $item->quantity;
+            if ($quantityDiff > 0) {
+                $variant = ProductVariant::find($item->product_variant_id);
+                if ($variant && $variant->stock < $quantityDiff) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "موجودی {$variant->product->title} کافی نیست"
+                    ], 422);
+                }
+                if ($variant) {
+                    $variant->decrement('stock', $quantityDiff);
+                    $this->productStockService->sync($variant->product);
+                }
+            } elseif ($quantityDiff < 0) {
+                $variant = ProductVariant::find($item->product_variant_id);
+                if ($variant) {
+                    $variant->increment('stock', abs($quantityDiff));
+                    $this->productStockService->sync($variant->product);
+                }
+            }
+
+            // به‌روزرسانی آیتم
+            $item->update([
+                'quantity' => $request->quantity,
+                'price' => $request->price
+            ]);
+
+            // محاسبه مجدد سفارش
+            $this->recalculateOrderTotal($order);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'آیتم با موفقیت به‌روزرسانی شد',
+                'data' => $item
+            ]);
+        });
+    }
+
+    /**
+     * محاسبه مجدد کل سفارش
+     */
+    private function recalculateOrderTotal($order)
+    {
+        $subtotal = $order->items->sum(function ($item) {
+            return $item->price * $item->quantity;
+        });
+
+        $address = $order->address;
+        $quantity = $order->items->sum('quantity');
+
+        $shippingService = new ShippingService();
+        $shippingCost = $shippingService->calculateCost(
+            $order->shipping_id,
+            $address->province_id,
+            $address->city_id,
+            $subtotal,
+            $quantity
+        );
+
+        $order->subtotal = $subtotal;
+        $order->shipping_cost = $shippingCost;
+        $order->total = $subtotal - $order->discount_amount + $shippingCost;
+        $order->save();
+
+        return $order;
+    }
+    /**
+     * لیست سفارش‌هایی که پرداختشون verify شده ولی به هر دلیل paid نشدن
+     * از تاریخ 2026-09-10 به بعد
+     */
+    public function problematicOrders(Request $request)
+    {
+        // --------------------------------------------------------
+        // 0) تاریخ شروع گزارش
+        // --------------------------------------------------------
+        $startDate = Carbon::parse('2026-09-10')->startOfDay();
+
+        // --------------------------------------------------------
+        // 1) نوع مشکل
+        // --------------------------------------------------------
+        $type = $request->get('type', 'all'); // all | verified_not_paid | failed_with_payment | stuck
+
+        $query = Order::with([
+            'user',
+            'address.province',
+            'address.city',
+            'shipping',
+            'gatewayTransactions',
+            'items.product',
+            'items.variant.values',
+        ])
+            ->whereNull('parent_order_id')          // فقط سفارش‌های والد
+            ->where('created_at', '>=', $startDate); // ✅ از تاریخ 2026-09-10 به بعد
+
+        // --------------------------------------------------------
+        // 2) اعمال فیلتر بر اساس نوع مشکل
+        // --------------------------------------------------------
+        switch ($type) {
+
+            case 'verified_not_paid':
+                $query->where('payment_status', '!=', 'paid')
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('paid_at')
+                            ->where('status', 'paid');
+                    });
+                break;
+
+            case 'failed_with_payment':
+                $query->where('status', 'failed')
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('verify_data');
+                    });
+                break;
+
+            case 'stuck':
+                $query->whereIn('status', ['pending', 'reserved'])
+                    ->whereHas('gatewayTransactions', function ($q) {
+                        $q->whereNotNull('paid_at')
+                            ->where('status', 'paid');
+                    });
+                break;
+
+            case 'all':
+            default:
+                $query->where(function ($q) {
+                    $q->where(function ($sub) {
+                        $sub->where('payment_status', '!=', 'paid')
+                            ->whereHas('gatewayTransactions', function ($gt) {
+                                $gt->whereNotNull('paid_at')
+                                    ->where('status', 'paid');
+                            });
+                    })
+                        ->orWhere(function ($sub) {
+                            $sub->where('status', 'failed')
+                                ->whereHas('gatewayTransactions', function ($gt) {
+                                    $gt->whereNotNull('verify_data');
+                                });
+                        });
+                });
+                break;
+        }
+
+        // --------------------------------------------------------
+        // 3) فیلترهای اختیاری
+        // --------------------------------------------------------
+
+        if ($request->filled('date_from')) {
+            $query->where('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->where('created_at', '<=', $request->date_to);
+        }
+
+        if ($request->filled('gateway')) {
+            $query->whereHas('gatewayTransactions', function ($q) use ($request) {
+                $q->where('gateway', $request->gateway);
+            });
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', $request->user_id);
+        }
+
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+            $query->where(function ($q) use ($search) {
+                $q->where('id', 'like', "%{$search}%")
+                    ->orWhereHas('user', function ($uq) use ($search) {
+                        $uq->where('full_name', 'like', "%{$search}%")
+                            ->orWhere('mobile', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        // --------------------------------------------------------
+        // 4) بدون صفحه‌بندی
+        // --------------------------------------------------------
+        $orders = $query->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get();
+
+        // --------------------------------------------------------
+        // 5) تحلیل مشکل هر سفارش
+        // --------------------------------------------------------
+        $orders->each(function ($order) {
+            $order->problem_analysis = $this->analyzeOrderProblem($order);
+        });
+
+        // --------------------------------------------------------
+        // 6) آمار
+        // --------------------------------------------------------
+        $stats = [
+            'total' => $orders->count(),
+            'by_status' => $orders->groupBy('status')->map->count(),
+            'by_payment_status' => $orders->groupBy('payment_status')->map->count(),
+            'total_amount_at_risk' => $orders->where('payment_status', '!=', 'paid')->sum('total'),
+            'start_date' => $startDate->toDateString(), // برای نمایش توی پاسخ
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'سفارش‌های مشکل‌دار از تاریخ ' . $startDate->toDateString(),
+            'stats' => $stats,
+            'data' => $orders,
+        ]);
+    }
+    /**
+     * تحلیل مشکل هر سفارش
+     */
+    private function analyzeOrderProblem(Order $order): array
+    {
+        $problems = [];
+        $hasVerifiedTransaction = false;
+        $hasPaidTransaction = false;
+        $latestTransaction = $order->gatewayTransactions
+            ->sortByDesc('created_at')
+            ->first();
+
+        foreach ($order->gatewayTransactions as $t) {
+            // چک کردن verify موفق (بر اساس درگاه)
+            if ($this->isTransactionVerified($t)) {
+                $hasVerifiedTransaction = true;
+            }
+
+            if ($t->paid_at) {
+                $hasPaidTransaction = true;
+            }
+        }
+
+        // تشخیص نوع مشکل
+        if ($hasVerifiedTransaction && $order->payment_status !== 'paid') {
+            $problems[] = 'پرداخت verify شده ولی سفارش paid نشده';
+        }
+
+        if ($order->status === 'failed' && $hasVerifiedTransaction) {
+            $problems[] = 'سفارش failed شده ولی پرداخت موفق بوده';
+        }
+
+        if ($order->status === 'failed' && $latestTransaction) {
+            $problems[] = 'علت fail: ' . ($latestTransaction->message ?? 'نامشخص');
+        }
+
+        if ($hasPaidTransaction && !$order->paid_at) {
+            $problems[] = 'تراکنش paid_at دارد ولی سفارش هنوز pending است';
+        }
+
+        return [
+            'problems' => $problems,
+            'has_verified_transaction' => $hasVerifiedTransaction,
+            'has_paid_transaction' => $hasPaidTransaction,
+            'latest_transaction' => $latestTransaction ? [
+                'id' => $latestTransaction->id,
+                'gateway' => $latestTransaction->gateway,
+                'status' => $latestTransaction->status,
+                'message' => $latestTransaction->message,
+                'paid_at' => $latestTransaction->paid_at,
+                'verify_data' => $latestTransaction->verify_data,
+            ] : null,
+        ];
+    }
+
+    /**
+     * بررسی verify موفق بر اساس نوع درگاه
+     */
+    private function isTransactionVerified($transaction): bool
+    {
+        $data = $transaction->verify_data;
+        if (empty($data)) {
+            return false;
+        }
+
+        return match ($transaction->gateway) {
+            'parsian'  => ($data['status'] ?? -1) == 0,
+            'zarinpal' => in_array($data['code'] ?? $data['Status'] ?? null, [100, 101]),
+            'zibal'    => in_array($data['result'] ?? null, [100, 201]),
+            default    => false,
+        };
+    }
+}

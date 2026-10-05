@@ -1,0 +1,11 @@
+{
+    "name": "Addresses",
+    "alias": "addresses",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Addresses\\Providers\\AddressesServiceProvider"
+    ],
+    "files": []
+}

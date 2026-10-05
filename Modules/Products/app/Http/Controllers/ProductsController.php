@@ -1,0 +1,693 @@
+<?php
+
+namespace Modules\Products\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use App\Support\CacheService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Modules\Notifications\Services\NotificationService;
+use Modules\Orders\Models\Order;
+use Modules\Orders\Models\OrderItem;
+use Modules\Products\Http\Requests\ProductStoreRequest;
+use Modules\Products\Http\Requests\ProductUpdateRequest;
+use Modules\Products\Models\Product;
+use Modules\Products\Models\ProductVariant;
+use Modules\Products\Services\ProductStockService;
+use Modules\Wishlist\Models\Wishlist;
+
+class ProductsController extends Controller
+{
+    public function __construct(
+        protected ProductStockService  $productStockService,
+    ) {}
+    // لیست محصولات
+    public function index(Request $request)
+    {
+        $query = Product::with(['categories', 'images', 'variants.values']);
+
+        // جستجو
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%");
+            });
+        }
+
+        // فیلتر وضعیت
+        if ($status = $request->get('status')) {
+            if ($status === 'draft') {
+                // فقط پیش‌نویس‌هایی که published_at دارند
+                $query->where('status', 'draft')
+                    ->whereNotNull('published_at');
+            } else {
+                // وضعیت منتشر شده یا هر وضعیت دیگر
+                $query->where('status', $status);
+            }
+        } else {
+            // بدون فیلتر: همه به جز پیش‌نویس‌های بدون published_at
+            $query->where(function ($q) {
+                $q->where('status', '!=', 'draft')
+                    ->orWhere(function ($q2) {
+                        $q2->where('status', 'draft')
+                            ->whereNotNull('published_at');
+                    });
+            });
+        }
+
+        $products = $query->orderBy('created_at', 'desc')->paginate(15);
+        return response()->json($products);
+    }
+
+    public function productSearchAdmin(Request $request)
+    {
+        $query = Product::with(['categories', 'images', 'variants.values'])->where('status', 'published');
+        // جستجو
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%");
+            });
+        }
+        $products = $query->latest()->paginate(15);
+        return response()->json($products);
+    }
+    // ذخیره محصول
+    public function store(ProductStoreRequest $request, NotificationService $notifications)
+    {
+        $data = $request->validated();
+
+        // main_image
+        if ($request->hasFile('main_image')) {
+            $data['main_image'] = $request->file('main_image')->store('products/main', 'public');
+        }
+        // video
+        if ($request->hasFile('video')) {
+            $data['video'] = $request->file('video')->store('products/videos', 'public');
+        }
+
+        // بررسی اعتبار تخفیف برای محصول
+        $hasValidDiscount = !empty($data['discount_value']) &&
+            !empty($data['discount_type']) &&
+            (empty($data['discount_end_at']) || $data['discount_end_at'] > now());
+
+        // اگر تخفیف معتبر نبود، فیلدهای تخفیف رو نال کن
+        if (!$hasValidDiscount) {
+            $data['discount_value'] = null;
+            $data['discount_type'] = null;
+            $data['discount_start_at'] = null;
+            $data['discount_end_at'] = null;
+        }
+
+        $product = Product::create($data);
+
+        // دسته‌بندی‌ها
+        if (!empty($data['categories'])) {
+            $product->categories()->sync($data['categories']);
+        }
+        // تصاویر اضافی
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $index => $image) {
+                $path = $image->store('products/images', 'public');
+                $product->images()->create([
+                    'path'       => $path,
+                    'alt'        => $product->title,
+                    'sort_order' => $index,
+                ]);
+            }
+        }
+        // ساخت تنوع پیش فرض
+        $variantData = [
+            'price' => $product->price,
+            'wp_added' => false,
+            'stock' => $product->stock ?? 0,
+            'sku' => $product->sku,
+        ];
+
+        // اگر تخفیف معتبر بود، به تنوع هم اضافه کن
+        if ($hasValidDiscount) {
+            $variantData['discount_value'] = $data['discount_value'];
+            $variantData['discount_type'] = $data['discount_type'];
+            $variantData['discount_start_at'] = $data['discount_start_at'] ?? null;
+            $variantData['discount_end_at'] = $data['discount_end_at'] ?? null;
+        }
+
+        $product->variants()->create($variantData);
+
+        $notifications->create(
+            "ثبت محصول",
+            "محصول {$product->title} در سیستم ثبت شد",
+            "notification_product",
+            ['product' => $product->id]
+        );
+        $this->productStockService->sync($product);
+
+        return response()->json($product->load('categories', 'images'));
+    }
+    // نمایش یک محصول
+    public function show(Product $product)
+    {
+        $groupedSpecifications = $product->specifications->groupBy('id')->map(function ($group) {
+            $first = $group->first();
+            return [
+                'id' => $first->id,
+                'title' => $first->title,
+                'created_at' => $first->created_at,
+                'updated_at' => $first->updated_at,
+                'values' => $group->pluck('pivot.specification_value_id')->toArray(), // فقط آرایه values
+            ];
+        })->values();
+        $productArray = $product->load('categories', 'images', 'variants.values', 'specifications')->toArray();
+        $productArray['specifications'] = $groupedSpecifications;
+
+        return response()->json($productArray);
+    }
+    /**
+     * تصمیم‌گیری برای sync موجودی بعد از ویرایش محصول
+     */
+    protected function handleVariantsSyncAfterUpdate(Product $product): void
+    {
+        // ۱. بررسی: آیا بیش از یک واریانت با values داریم که wp_added=false باشه؟
+        $hasMultipleVariantsWithValues = $product->variants()
+            ->where('wp_added', false)
+            ->whereHas('values') // واریانت‌هایی که حداقل یک value دارن
+            ->count() > 1;
+
+        if ($hasMultipleVariantsWithValues) {
+            // حالت اول: چند واریانت واقعی (رنگ/سایز) → sync محصول از واریانت‌ها
+            $this->productStockService->sync($product);
+            return;
+        }
+
+        // ۲. حالت دوم: محصول چند واریانت واقعی نداره
+        // بررسی: آیا یک واریانت با wp_added=false و بدون values داریم؟
+        $simpleVariant = $product->variants()
+            ->where('wp_added', false)
+            ->whereDoesntHave('values')
+            ->first();
+
+        if ($simpleVariant) {
+            // موجودی محصول رو به این واریانت بده
+            $simpleVariant->update([
+                'stock' => $product->stock,
+            ]);
+            return;
+        }
+
+        // ۳. حالت سوم: چنین واریانتی نداره → یکی بساز
+        $product->variants()->create([
+            'sku'      => $product->sku,
+            'price'    => $product->price ?? 0,
+            'stock'    => $product->stock ?? 0,
+            'wp_added' => false,
+        ]);
+    }
+    // آپدیت محصول
+    public function update(ProductUpdateRequest $request, Product $product, NotificationService $notifications)
+    {
+        $data = $request->validated();
+
+        // main_image
+        if ($request->hasFile('main_image')) {
+            if ($product->main_image) {
+                Storage::disk('public')->delete($product->main_image);
+            }
+            $data['main_image'] = $request->file('main_image')->store('products/main', 'public');
+        } elseif ($request->filled('main_image') && is_string($request->main_image)) {
+            $data['main_image'] = $product->main_image;
+        } else {
+            if ($product->main_image) {
+                Storage::disk('public')->delete($product->main_image);
+            }
+            $data['main_image'] = null;
+        }
+
+        $remove_video = $request->input('remove_video');
+        if ($request->hasFile('video')) {
+            if ($product->video) {
+                Storage::disk('public')->delete($product->video);
+            }
+            $data['video'] = $request->file('video')->store('products/videos', 'public');
+        } elseif ($remove_video) {
+            if ($product->video) {
+                Storage::disk('public')->delete($product->video);
+            }
+            $data['video'] = null;
+        }
+
+        // بررسی اینکه آیا تخفیف در درخواست ارسال شده یا نه
+        $discountSubmitted = array_key_exists('discount_value', $data) ||
+            array_key_exists('discount_type', $data) ||
+            array_key_exists('discount_start_at', $data) ||
+            array_key_exists('discount_end_at', $data);
+
+        // اگر تخفیف ارسال شده
+        if ($discountSubmitted) {
+            // بررسی اعتبار تخفیف
+            $hasValidDiscount = !empty($data['discount_value']) &&
+                !empty($data['discount_type']) &&
+                (empty($data['discount_end_at']) || $data['discount_end_at'] > now());
+
+            if ($hasValidDiscount) {
+                // تخفیف معتبر → روی همه تنوع‌ها اعمال کن
+                $product->variants()->update([
+                    'discount_value' => $data['discount_value'],
+                    'discount_type' => $data['discount_type'],
+                    'discount_start_at' => $data['discount_start_at'] ?? null,
+                    'discount_end_at' => $data['discount_end_at'] ?? null,
+                ]);
+            } else {
+                // تخفیف ارسال شده ولی نامعتبر → تخفیف تنوع‌ها رو پاک کن
+                $product->variants()->update([
+                    'discount_value' => null,
+                    'discount_type' => null,
+                    'discount_start_at' => null,
+                    'discount_end_at' => null,
+                ]);
+
+                // فیلدهای تخفیف محصول رو هم نال کن
+                $data['discount_value'] = null;
+                $data['discount_type'] = null;
+                $data['discount_start_at'] = null;
+                $data['discount_end_at'] = null;
+            }
+        }
+        // اگر تخفیف ارسال نشده → هیچ کاری با تنوع‌ها نکن
+        $product->update($data);
+
+        // دسته‌بندی‌ها
+        if (!empty($data['categories'])) {
+            $product->categories()->sync($data['categories']);
+        }
+
+        // تصاویر حذف‌شده
+        if ($request->filled('deleted_images')) {
+            $deletedIds = $request->input('deleted_images');
+            $oldImages = $product->images()->whereIn('id', $deletedIds)->get();
+            foreach ($oldImages as $img) {
+                Storage::disk('public')->delete($img->path);
+                $img->delete();
+            }
+        }
+
+        // تصاویر جدید
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $index => $image) {
+                $path = $image->store('products/images', 'public');
+                $product->images()->create([
+                    'path'       => $path,
+                    'alt'        => $product->title,
+                    'sort_order' => $index,
+                ]);
+            }
+        }
+        // ============================================================
+        // منطق جدید: تصمیم‌گیری بر اساس وضعیت واریانت‌ها
+        // ============================================================
+        $this->handleVariantsSyncAfterUpdate($product);
+
+        $notifications->create(
+            "ویرایش محصول",
+            "محصول {$product->title} در سیستم ویرایش شد",
+            "notification_product",
+            ['product' => $product->id]
+        );
+
+        return response()->json($product->load('categories', 'images', 'variants'));
+    }
+    // حذف محصول
+    public function destroy(Product $product, NotificationService $notifications)
+    {
+        $order = OrderItem::where('product_id', $product->id)->exists();
+        if ($order) {
+            return response()->json([
+                'message' => 'برای این محصول یک سفارش ثبت شده و قابل حذف نیست',
+                'success' => false
+            ], 403);
+        }
+        if ($product->main_image) {
+            Storage::disk('public')->delete($product->main_image);
+        }
+        if ($product->video) {
+            Storage::disk('public')->delete($product->video);
+        }
+        foreach ($product->images as $img) {
+            Storage::disk('public')->delete($img->path);
+            $img->delete();
+        }
+
+        $notifications->create(
+            "حذف محصول",
+            "محصول {$product->title} از سیستم حذف شد",
+            "notification_product",
+            ['product' => $product->id]
+        );
+        foreach ($product->variants as $variant) {
+            $variant->values()->detach(); // unlink attribute values
+            $variant->delete();
+        }
+        $product->delete();
+        return response()->json(['message' => 'Product deleted successfully']);
+    }
+
+    public function search(Request $request)
+    {
+        $query = Product::with(['categories'])
+            ->whereIn('sales_channel', ['online_only', 'both']);
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%");
+            });
+        }
+        $products = $query->take(15)->get();
+        return response()->json($products);
+    }
+
+    public function frontIndex(Request $request)
+    {
+        $shouldCache = $this->shouldCacheProductsList($request);
+
+        if ($shouldCache) {
+            $cacheKey = $this->buildProductsCacheKey($request);
+
+            $products = CacheService::rememberWithTags(
+                [CacheService::TAG_PRODUCTS],
+                $cacheKey,
+                CacheService::TTL_ONE_HOUR,
+                fn() => $this->buildProductsQuery($request)->paginate(18)
+            );
+        } else {
+            // کش نمی‌شه
+            $products = $this->buildProductsQuery($request)->paginate(18);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'لیست محصولات',
+            'data'    => $products,
+        ]);
+    }
+    private function shouldCacheProductsList(Request $request): bool
+    {
+        if ($request->filled('search'))           return false;
+        if ($request->filled('attribute_values')) return false;
+        if ($request->filled('min_price'))        return false;
+        if ($request->filled('max_price'))        return false;
+        if ($request->filled('in_stock'))         return false;
+        return true;
+    }
+    private function buildProductsCacheKey(Request $request): string
+    {
+        $params = [
+            'category_ids' => null,
+            'sort'         => $request->get('sort', 'newest'),
+            'page'         => (int) $request->get('page', 1),
+        ];
+
+        if ($request->filled('category_ids')) {
+            $ids = explode(',', $request->category_ids);
+            sort($ids); // یکدست‌سازی ترتیب
+            $params['category_ids'] = implode(',', $ids);
+        }
+
+        ksort($params);
+
+        return 'products_list_' . md5(json_encode($params));
+    }
+    private function buildProductsQuery(Request $request)
+    {
+        $query = Product::with(['categories', 'variants.values.attribute'])
+            ->where('status', '!=', 'draft')
+            ->where('price', '>', 0);
+
+        if ($search = $request->get('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                    ->orWhere('description', 'like', "%{$search}%");
+            });
+        }
+
+        if ($request->filled('category_ids')) {
+            $categoryIds = explode(',', $request->category_ids);
+            $query->whereHas('categories', function ($q) use ($categoryIds) {
+                $q->whereIn('categories.id', $categoryIds);
+            });
+        }
+
+        if ($request->filled('attribute_values')) {
+            $valueIds = explode(',', $request->query('attribute_values'));
+            $query->whereHas('variants.values', function ($q2) use ($valueIds) {
+                $q2->whereIn('attribute_values.id', $valueIds);
+            });
+        }
+
+        if ($minPrice = $request->get('min_price')) {
+            $query->where(function ($q) use ($minPrice) {
+                $q->where('price', '>=', $minPrice)
+                    ->orWhereHas('variants', fn($v) => $v->where('price', '>=', $minPrice));
+            });
+        }
+
+        if ($maxPrice = $request->get('max_price')) {
+            $query->where(function ($q) use ($maxPrice) {
+                $q->where('price', '<=', $maxPrice)
+                    ->orWhereHas('variants', fn($v) => $v->where('price', '<=', $maxPrice));
+            });
+        }
+
+        $onlyInStock = ($request->get('in_stock') == 1);
+        if ($onlyInStock) {
+            $query->where('status', 'published');
+        } else {
+            $query->orderByRaw("
+            CASE
+                WHEN status = 'published' THEN 0
+                ELSE 1
+            END ASC
+        ");
+        }
+
+        switch ($request->get('sort')) {
+            case 'cheapest':
+                $query->orderBy('price', 'ASC');
+                break;
+            case 'expensive':
+                $query->orderBy('price', 'DESC');
+                break;
+            case 'best_seller':
+                $query->withSum('orderItems as total_sold', 'quantity')
+                    ->orderByDesc('total_sold');
+                break;
+            case 'newest':
+            default:
+                $query->orderBy('created_at', 'desc');
+                break;
+        }
+
+        return $query;
+    }
+    public function frontDetail(Request $request, $id)
+    {
+        $user = $request->user();
+
+        $cached = CacheService::remember(
+            "product_detail_{$id}",
+            CacheService::TTL_ONE_DAY,
+            fn() => $this->buildProductDetailPayload($id)
+        );
+
+        $isInWishList = false;
+        if ($user) {
+            $isInWishList = Wishlist::where('user_id', $user->id)
+                ->where('product_id', $id)
+                ->exists();
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => array_merge($cached, [
+                'wishlist' => $isInWishList,
+            ]),
+        ]);
+    }
+    /**
+     * ساخت payload کش‌پذیر جزئیات محصول
+     */
+    private function buildProductDetailPayload($id): array
+    {
+        $product = Product::with([
+            'categories:id,title',
+            'images:id,product_id,path',
+            'variants.values.attribute',
+            'specifications.values',
+            'comments'
+        ])
+            ->withCount('variants')
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->findOrFail($id);
+
+        // فقط واریانت‌هایی که wp_added=false هستن
+        $variants = $product->variants->filter(function ($variant) {
+            return $variant->wp_added == false;
+        })->values();
+
+        $specs = $product->specifications_with_values;
+
+        // --- attributes آماده برای فرانت ---
+        $attributesById = [];
+        $attributeOrder = [];
+
+        foreach ($variants as $variant) {
+            $isAvailable = $variant->stock > 0;
+            foreach ($variant->values as $value) {
+                $attr = $value->attribute;
+                if (!isset($attributesById[$attr->id])) {
+                    $attributesById[$attr->id] = [
+                        'id' => $attr->id,
+                        'title' => $attr->name,
+                        'values' => []
+                    ];
+                    $attributeOrder[] = $attr->id;
+                }
+
+                if (!isset($attributesById[$attr->id]['values'][$value->id])) {
+                    $attributesById[$attr->id]['values'][$value->id] = [
+                        'id' => $value->id,
+                        'value' => $value->value,
+                        'is_available' => $isAvailable
+                    ];
+                } else {
+                    $attributesById[$attr->id]['values'][$value->id]['is_available'] =
+                        $attributesById[$attr->id]['values'][$value->id]['is_available'] || $isAvailable;
+                }
+            }
+        }
+
+        foreach ($attributesById as $aid => $group) {
+            $attributesById[$aid]['values'] = array_values($group['values']);
+        }
+
+        $attributes = [];
+        foreach ($attributeOrder as $aid) {
+            $attributes[] = $attributesById[$aid];
+        }
+
+        // --- ساخت nested_map تو در تو ---
+        $nestedMap = [];
+        foreach ($variants as $variant) {
+            $valueData = $variant->values->map(function ($v) {
+                return [
+                    'value_id' => $v->id,
+                    'attribute_id' => $v->attribute->id
+                ];
+            })->toArray();
+
+            if (empty($valueData)) {
+                continue;
+            }
+
+            usort($valueData, function ($a, $b) use ($attributeOrder) {
+                $posA = array_search($a['attribute_id'], $attributeOrder);
+                $posB = array_search($b['attribute_id'], $attributeOrder);
+                return $posA - $posB;
+            });
+
+            $valueIds = array_column($valueData, 'value_id');
+
+            $variantSummary = [
+                'id' => $variant->id,
+                'sku' => $variant->sku,
+                'price' => $variant->price,
+                'stock' => $variant->stock,
+                'is_available' => $variant->stock > 0,
+                'values' => $variant->values->map(function ($v) {
+                    return [
+                        'id' => $v->id,
+                        'attribute_id' => $v->attribute->id,
+                        'attribute' => $v->attribute->name,
+                        'value' => $v->value
+                    ];
+                })->values()
+            ];
+
+            $ref = &$nestedMap;
+            foreach ($valueIds as $vid) {
+                if (!isset($ref[$vid])) $ref[$vid] = [];
+                $ref = &$ref[$vid];
+            }
+            $ref = $variantSummary;
+            unset($ref);
+        }
+
+        return [
+            'specifications' => $specs,
+            'product' => [
+                'id' => $product->id,
+                'title' => $product->title,
+                'video' => $product->video,
+                'images' => $product->images,
+                'status' => $product->status,
+                'description' => $product->description,
+                'price' => $product->price,
+                'final_price' => $product->final_price,
+                'main_image' => $product->main_image,
+            ],
+            'attributes_order' => $attributeOrder,
+            'attributes' => $attributes,
+            'nested_map' => $nestedMap,
+            'variants' => $variants->map(function ($variant) {
+                return [
+                    'id' => $variant->id,
+                    'sku' => $variant->sku,
+                    'price' => $variant->price,
+                    'stock' => $variant->stock,
+                    'discount_start_at' => $variant->discount_start_at,
+                    'discount_end_at' => $variant->discount_end_at,
+                    'discount_value' => $variant->discount_value,
+                    'discount_type' => $variant->discount_type,
+                    'final_price' => $variant->final_price,
+                    'is_available' => $variant->stock > 0,
+                    'values' => $variant->values->map(function ($v) {
+                        return [
+                            'id' => $v->id,
+                            'attribute_id' => $v->attribute->id,
+                            'attribute' => $v->attribute->name,
+                            'value' => $v->value
+                        ];
+                    })->values()
+                ];
+            })->values(),
+        ];
+    }
+    public function similar($id)
+    {
+        $product = Product::with('categories:id')->findOrFail($id);
+        // گرفتن ID دسته‌ها
+        $categoryIds = $product->categories->pluck('id');
+        // پیدا کردن محصولات مشابه
+        $similar = Product::where('status', 'published')
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->whereHas('categories', function ($q) use ($categoryIds) {
+                $q->whereIn('categories.id', $categoryIds);
+            })
+            ->where('id', '!=', $product->id) // حذف محصول اصلی
+            ->with([
+                'images:id,product_id,path',
+                'variants:id,product_id,price,stock'
+            ])
+            ->limit(10)
+            ->get();
+        // اگر مشابه پیدا نشد → fallback
+        if ($similar->isEmpty()) {
+            $similar = Product::where('status', 'published')
+                ->where('id', '!=', $product->id)
+                ->orderBy('created_at', 'desc')
+                ->limit(10)
+                ->get();
+        }
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'similar_products' => $similar
+            ]
+        ]);
+    }
+}

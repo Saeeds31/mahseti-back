@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/articlecategories",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\ArticleCategories\\": "app/",
+            "Modules\\ArticleCategories\\Database\\Factories\\": "database/factories/",
+            "Modules\\ArticleCategories\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\ArticleCategories\\Tests\\": "tests/"
+        }
+    }
+}

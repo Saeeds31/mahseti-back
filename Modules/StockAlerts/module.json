@@ -1,0 +1,11 @@
+{
+    "name": "StockAlerts",
+    "alias": "stockalerts",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\StockAlerts\\Providers\\StockAlertsServiceProvider"
+    ],
+    "files": []
+}

@@ -1,0 +1,11 @@
+{
+    "name": "CardTransfer",
+    "alias": "cardtransfer",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\CardTransfer\\Providers\\CardTransferServiceProvider"
+    ],
+    "files": []
+}
