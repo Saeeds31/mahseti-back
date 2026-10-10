@@ -35,31 +35,8 @@ class ShippingService
 
         // بررسی تمام شرط‌ها
         $allConditionsMet = true;
-        $applicableRange = null;
-
-        // اولویت‌بندی: city > province > general
-        // ابتدا شرط‌های شهر را بررسی می‌کنیم
-        $cityConditions = $conditions->filter(fn($c) => $c->condition === 'city' && $c->value == $cityId);
-        $provinceConditions = $conditions->filter(fn($c) => $c->condition === 'province' && $c->value == $provinceId);
-        $otherConditions = $conditions->filter(fn($c) => !in_array($c->condition, ['city', 'province']));
-
-        // انتخاب مجموعه شرط‌های مناسب (اولویت با شهر)
-        $activeConditions = $cityConditions->isNotEmpty() ? $cityConditions : ($provinceConditions->isNotEmpty() ? $provinceConditions : collect());
-
-        // اگر شرط شهر یا استان داریم، آنها را با سایر شرط‌ها ترکیب می‌کنیم
-        if ($activeConditions->isNotEmpty()) {
-            $allConditions = $activeConditions->merge($otherConditions);
-        } else {
-            $allConditions = $otherConditions;
-        }
-
-        // اگر هیچ شرط فعالی نداریم (شرط شهر/استان نیست ولی شرط total و ... داریم)
-        if ($allConditions->isEmpty() && $otherConditions->isNotEmpty()) {
-            $allConditions = $otherConditions;
-        }
-
         // بررسی شرط‌ها
-        foreach ($allConditions as $condition) {
+        foreach ($conditions as $condition) {
             $value = $condition->value;
             $type = $condition->type;
             $met = false;
