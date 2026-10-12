@@ -398,30 +398,37 @@ class TorobProductService
             ->all();
     }
 
-    protected function buildSpecs(Product $product, ProductVariant $variant): array
+    protected function buildSpecs(Product $product, ProductVariant $variant): object
     {
         $specs = [];
 
         // ۱. مشخصات محصول
         foreach ($product->specifications_with_values as $spec) {
-            $value = collect($spec['values'])
+            $title = $spec['title'] ?? null;
+            if (!$title) {
+                continue;
+            }
+
+            $value = collect($spec['values'] ?? [])
                 ->pluck('value')
                 ->filter()
                 ->implode(', ');
 
             if ($value !== '') {
-                $specs[$spec['title']] = $value;
+                $specs[$title] = $value;
             }
         }
 
         // ۲. ویژگی‌های variant (رنگ، سایز، ...)
         foreach ($variant->values as $value) {
-            if ($value->attribute && $value->value) {
-                $specs[$value->attribute->name] = $value->value;
+            $name = $value->attribute?->name;
+            if ($name && $value->value) {
+                $specs[$name] = $value->value;
             }
         }
 
-        return $specs;
+        // ⚠️ مهم: تبدیل به object تا json_encode اون رو {} برسونه نه []
+        return (object) $specs;
     }
 
     protected function toIso8601(?\DateTimeInterface $date): ?string
