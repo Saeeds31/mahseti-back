@@ -101,6 +101,8 @@ class OrdersController extends Controller
         $query = Order::with([
             'user',
             'address',
+            'address.province',
+            'address.city',
             'shipping',
             'gatewayTransactions',
             'items',
@@ -631,7 +633,7 @@ class OrdersController extends Controller
     {
         $startDate = Carbon::parse('2026-09-10')->startOfDay();
 
-        $query = Order::with(['items', 'user', 'address', 'shipping', 'gatewayTransactions'])
+        $query = Order::with(['items', 'user', 'address', 'address.province', 'address.city', 'shipping', 'gatewayTransactions'])
             ->where(function ($q) use ($startDate) {
                 $q->where(function ($sub) use ($startDate) {
                     $sub->where('status', 'paid')
@@ -1027,13 +1029,13 @@ class OrdersController extends Controller
         $address = null;
 
         if ($request->address_id) {
-            $address = Address::where('id', $request->address_id)
+            $address = Address::with(['province', 'city'])->where('id', $request->address_id)
                 ->where('user_id', $user->id)
                 ->first();
         }
 
         if (!$address) {
-            $address = Address::where('user_id', $user->id)->first();
+            $address = Address::with(['province', 'city'])->where('user_id', $user->id)->first();
         }
 
         if (!$address) {

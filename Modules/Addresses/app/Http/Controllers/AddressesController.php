@@ -31,6 +31,7 @@ class AddressesController extends Controller
     public function store(AddressStoreRequest $request, User $user, NotificationService $notifications)
     {
         $data = $request->validated();
+        $data['show_to_user'] = true;
         $address = $user->addresses()->create($data);
         $notifications->create(
             " ثبت آدرس",
@@ -62,6 +63,7 @@ class AddressesController extends Controller
             return response()->json(['error' => 'Address does not belong to this user'], 403);
         }
         $data = $request->validated();
+        $data['show_to_user'] = true;
         $address->update($data);
         $notifications->create(
             " ویرایش آدرس",
@@ -101,7 +103,7 @@ class AddressesController extends Controller
     public function frontIndex(Request $request)
     {
         $user = $request->user();
-        $addresses = $user->addresses()->with(['province', 'city'])->get();
+        $addresses = $user->addresses()->with(['province', 'city'])->where('show_to_user', true)->get();
         return response()->json($addresses);
     }
     public function storeAddresses(Request $request, NotificationService $notifications)
@@ -116,6 +118,7 @@ class AddressesController extends Controller
             'phone'         => ['required', 'digits:11'],
         ]);
         $validated_data['user_id'] = $user->id;
+        $validated_data['show_to_user'] = true;
         $address = Address::create($validated_data);
         $notifications->create(
             " ثبت آدرس",
@@ -153,7 +156,7 @@ class AddressesController extends Controller
             'address_line'  => ['required', 'string'],
             'phone'         => ['required', 'digits:11'],
         ]);
-
+        $validated['show_to_user'] = true;
         $address->update($validated);
         $notifications->create(
             " ویرایش آدرس",
@@ -174,10 +177,17 @@ class AddressesController extends Controller
         $address = Address::where('user_id', $user->id)->findOrFail($id);
         // اگر قبلاً در سفارش استفاده شده → اجازه حذف نداریم
         if (Order::where('address_id', $address->id)->exists()) {
+            $address->update([
+                'show_to_user' => false
+            ]);
             return response()->json([
-                'success' => false,
-                'message' => 'این آدرس در سفارش‌های قبلی استفاده شده و قابل حذف نیست.'
-            ], 403);
+                'success' => true,
+                'message' => 'آدرس با موفقیت حذف شد'
+            ]);
+            // return response()->json([
+            //     'success' => false,
+            //     'message' => 'این آدرس در سفارش‌های قبلی استفاده شده و قابل حذف نیست.'
+            // ], 403);
         }
 
         $address->delete();

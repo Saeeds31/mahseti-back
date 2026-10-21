@@ -21,6 +21,7 @@ class Address extends Model
         'city_id',
         'postal_code',
         'address_line',
+        'show_to_user',
         'phone'
     ];
 
