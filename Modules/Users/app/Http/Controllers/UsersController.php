@@ -61,7 +61,7 @@ class UsersController extends Controller
     }
     public function index(Request $request)
     {
-        $query = User::with(['roles', 'addresses', 'wallet']);
+        $query = User::with(['roles', 'addresses', 'addresses.province', 'addresses.city', 'wallet']);
 
         // اگر پارامتر search ارسال شده باشد
         if ($search = $request->get('search')) {
