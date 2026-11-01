@@ -1217,19 +1217,14 @@ class OrdersController extends Controller
         $user = $request->user();
 
         // پیدا کردن سفارش با تمام روابط
-        $order = Order::with([
-            'items.product',
-            'items.variant.values.attribute',
-            'address.province',
-            'address.city',
-            'shipping',
-            'user',
-            'cardTransferReceipt', // اضافه کردن رابطه رسید
-            'cardTransferReceipt.admin', // اطلاعات ادمین تایید کننده
-        ])->where('id', $orderId)
+        $order = Order::withAllChildren()
+            ->with([
+                'cardTransferReceipt',
+                'cardTransferReceipt.admin',
+            ])
+            ->where('id', $orderId)
             ->where('user_id', $user->id)
             ->first();
-
         if (!$order) {
             return response()->json([
                 'message' => 'سفارش پیدا نشد یا دسترسی ندارید.'

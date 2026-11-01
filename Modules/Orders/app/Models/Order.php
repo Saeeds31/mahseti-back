@@ -187,6 +187,7 @@ class Order extends Model
             'gatewayTransactions',
             'items.product',
             'items.variant.values',
+            'items.variant.values.attribute',
             'childOrders' => function ($q) {
                 $q->where('status', 'paid')->with([
                     'user',
@@ -195,6 +196,7 @@ class Order extends Model
                     'shipping',
                     'items.product',
                     'items.variant.values',
+                    'items.variant.values.attribute',
                 ]); // فراخوانی بازگشتی
             }
         ]);
