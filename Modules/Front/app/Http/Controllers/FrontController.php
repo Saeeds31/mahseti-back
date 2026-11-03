@@ -165,7 +165,7 @@ class FrontController extends Controller
         $data['new_products'] = CacheService::rememberWithTags(
             [CacheService::TAG_PRODUCTS],
             'home_new_products',
-            CacheService::TTL_ONE_WEEK,
+            CacheService::TTL_ONE_DAY,
             fn() => Product::latestProducts()
         );
         $data['blogs'] = CacheService::rememberWithTags(
