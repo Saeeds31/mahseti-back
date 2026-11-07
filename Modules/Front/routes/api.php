@@ -9,3 +9,4 @@ Route::prefix('v1/front')->group(function () {
     Route::get("/base", [FrontController::class, "base"])->name('base');
     Route::get("/shop-filters", [FrontController::class, "filters"])->name('shop-filters');
 });
+Route::get('/v1/sitemap-urls', [FrontController::class, 'sitemapUrls']);

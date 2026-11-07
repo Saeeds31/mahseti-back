@@ -149,7 +149,7 @@ class FrontController extends Controller
             [CacheService::TAG_PRODUCTS],
             'home_rechargeables',
             CacheService::TTL_ONE_DAY,
-            fn() => Product::where('is_rechargeable', true)->where('status','published')->take(15)->get()
+            fn() => Product::where('is_rechargeable', true)->where('status', 'published')->take(15)->get()
         );
         $data['banners'] =
             CacheService::remember(
@@ -216,6 +216,126 @@ class FrontController extends Controller
             'success' => true,
             'message' => 'home data successfully',
             'data'    => $data
+        ], 200);
+    }
+    /**
+     * تولید لیست URLهای سایت‌مپ
+     * GET /api/v1/sitemap-urls
+     */
+    public function sitemapUrls()
+    {
+        $frontUrl = rtrim(config('app.frontend_url', env('FRONT_URL', '')), '/');
+
+        if (empty($frontUrl)) {
+            Log::warning('FRONT_URL در env تنظیم نشده است.');
+            return response()->json([
+                'success' => false,
+                'message' => 'FRONT_URL تنظیم نشده است.',
+                'data'    => [],
+            ], 500);
+        }
+
+        $urls = [];
+
+        // ---------------------------------------------------------
+        // ۱) صفحات ثابت
+        // ---------------------------------------------------------
+        $staticPages = [
+            ['path' => '/',           'priority' => '1.0', 'changefreq' => 'daily'],
+            ['path' => '/about-us',   'priority' => '0.5', 'changefreq' => 'monthly'],
+            ['path' => '/contact-us', 'priority' => '0.5', 'changefreq' => 'monthly'],
+            ['path' => '/products',   'priority' => '0.9', 'changefreq' => 'daily'],
+            ['path' => '/blogs',      'priority' => '0.8', 'changefreq' => 'daily'],
+        ];
+
+        foreach ($staticPages as $page) {
+            $urls[] = [
+                'loc'        => $frontUrl . $page['path'],
+                'lastmod'    => now()->toDateString(),
+                'changefreq' => $page['changefreq'],
+                'priority'   => $page['priority'],
+            ];
+        }
+
+        // ---------------------------------------------------------
+        // ۲) محصولات
+        // آدرس: /product/{slug}  یا  /product/{id}
+        // ---------------------------------------------------------
+        Product::query()
+            ->where('status', 'published')
+            ->whereIn('sales_channel', ['online_only', 'both'])
+            ->select('id', 'slug', 'updated_at')
+            ->chunk(1000, function ($products) use (&$urls, $frontUrl) {
+                foreach ($products as $product) {
+                    $identifier = !empty($product->slug) ? $product->slug : $product->id;
+                    $urls[] = [
+                        'loc'        => $frontUrl . '/product/' . $identifier,
+                        'lastmod'    => optional($product->updated_at)->toDateString() ?? now()->toDateString(),
+                        'changefreq' => 'weekly',
+                        'priority'   => '0.8',
+                    ];
+                }
+            });
+
+        // ---------------------------------------------------------
+        // ۳) دسته‌بندی‌ها (با ساختار درختی)
+        // آدرس: /products/{slug1}/{slug2}/...
+        // ---------------------------------------------------------
+        $categories = Category::select('id', 'slug', 'parent_id', 'updated_at')
+            ->get()
+            ->keyBy('id');
+
+        // ساخت مسیر کامل برای هر دسته‌بندی
+        $buildCategoryPath = function ($category) use ($categories) {
+            $segments = [];
+            $current  = $category;
+            $guard    = 0;
+
+            while ($current && $guard < 20) {
+                $segments[] = !empty($current->slug) ? $current->slug : $current->id;
+                $current    = $current->parent_id ? ($categories[$current->parent_id] ?? null) : null;
+                $guard++;
+            }
+
+            return array_reverse($segments);
+        };
+
+        foreach ($categories as $category) {
+            $segments = $buildCategoryPath($category);
+            if (empty($segments)) {
+                continue;
+            }
+
+            $urls[] = [
+                'loc'        => $frontUrl . '/products/' . implode('/', $segments),
+                'lastmod'    => optional($category->updated_at)->toDateString() ?? now()->toDateString(),
+                'changefreq' => 'weekly',
+                'priority'   => '0.7',
+            ];
+        }
+
+        // ---------------------------------------------------------
+        // ۴) مقالات
+        // آدرس: /blog/{slug}  یا  /blog/{id}
+        // ---------------------------------------------------------
+        Article::query()
+            ->select('id', 'slug', 'updated_at')
+            ->chunk(1000, function ($articles) use (&$urls, $frontUrl) {
+                foreach ($articles as $article) {
+                    $identifier = !empty($article->slug) ? $article->slug : $article->id;
+                    $urls[] = [
+                        'loc'        => $frontUrl . '/blog/' . $identifier,
+                        'lastmod'    => optional($article->updated_at)->toDateString() ?? now()->toDateString(),
+                        'changefreq' => 'monthly',
+                        'priority'   => '0.6',
+                    ];
+                }
+            });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'لیست URLهای سایت‌مپ',
+            'data'    => $urls,
         ], 200);
     }
 }
