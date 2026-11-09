@@ -264,7 +264,7 @@ class FrontController extends Controller
         Product::query()
             ->where('status', 'published')
             ->whereIn('sales_channel', ['online_only', 'both'])
-            ->select('id', 'slug', 'updated_at')
+            ->select('id', 'updated_at')
             ->chunk(1000, function ($products) use (&$urls, $frontUrl) {
                 foreach ($products as $product) {
                     $identifier = !empty($product->slug) ? $product->slug : $product->id;
