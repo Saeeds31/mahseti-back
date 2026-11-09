@@ -189,6 +189,7 @@ class ProductsController extends Controller
             $simpleVariant->update([
                 'stock' => $product->stock,
             ]);
+            $this->productStockService->sync($product);
             return;
         }
 
