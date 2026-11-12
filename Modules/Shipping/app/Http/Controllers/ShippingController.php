@@ -21,14 +21,31 @@ class ShippingController extends Controller
     public function __construct(
         protected ShippingService $shippingService,
     ) {}
+    /**
+     * ذخیره ترتیب روش‌های حمل و نقل بر اساس priority
+     */
+    public function reorder(Request $request)
+    {
+        $data = $request->validate([
+            'ids'   => 'required|array|min:1',
+            'ids.*' => 'integer|exists:shippings,id',
+        ]);
 
+        foreach ($data['ids'] as $index => $id) {
+            Shipping::where('id', $id)->update(['priority' => $index + 1]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'ترتیب روش‌های حمل و نقل به‌روزرسانی شد',
+        ]);
+    }
     /**
      * Display a listing of shipping methods (with pagination).
      */
     public function index(Request $request)
     {
-
-        $methods = Shipping::get();
+        $methods = Shipping::orderBy('priority', 'asc')->get();
 
         return response()->json([
             'success' => true,
@@ -164,7 +181,9 @@ class ShippingController extends Controller
         $quantity = $request->get('quantity', 0);
         $address = Address::with(['province', 'city'])->findOrFail($addressId);
 
-        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $shippings = Shipping::with('conditions')->where('status', 1)
+            ->orderBy('priority', 'asc')
+            ->get();
 
         $available = [];
 
@@ -315,6 +334,7 @@ class ShippingController extends Controller
             $shippings = Shipping::with('conditions')
                 ->when($reservationShippingId, fn($q) => $q->where('id', '!=', $reservationShippingId))
                 ->whereIn('status', [1, '1', true])
+                ->orderBy('priority', 'asc')
                 ->get();
             $available = [];
 
@@ -408,7 +428,9 @@ class ShippingController extends Controller
         // =====================================================
         // 6) حالت عادی (بدون رزرو)
         // =====================================================
-        $shippings = Shipping::with('conditions')->where('status', 1)->get();
+        $shippings = Shipping::with('conditions')->where('status', 1)
+            ->orderBy('priority', 'asc')
+            ->get();
         $available = [];
 
         foreach ($shippings as $shipping) {
@@ -623,6 +645,7 @@ class ShippingController extends Controller
         // حالت عادی (بدون رزرو)
         $shippings = Shipping::with('conditions')
             ->where('status', 1)
+            ->orderBy('priority', 'asc')
             ->get();
 
         $available = [];
