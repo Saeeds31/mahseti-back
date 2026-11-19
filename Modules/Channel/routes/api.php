@@ -7,7 +7,7 @@ use Modules\Channel\Http\Controllers\Torob\TorobProductController;
 use Modules\Channel\Http\Middleware\VerifyTorobToken;
 
 
-Route::prefix('channel/torob')
+Route::prefix('channel/torob')  
     ->middleware(['api', VerifyTorobToken::class])
     ->group(function () {
         Route::post('v3/products', TorobProductController::class);

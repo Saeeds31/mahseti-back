@@ -17,7 +17,7 @@ class ProductStoreRequest extends FormRequest
             'main_image'       => ['nullable', 'file', 'max:1024'], // می‌تونی بعدا image validation بذاری
             'meta_title'       => ['nullable', 'string', 'max:255'],
             'meta_description' => ['nullable', 'string', 'max:255'],
-            'status'           => ['required', 'in:draft,published,unpublished'],
+            'status'           => ['required', 'in:draft,published,unpublished,trash'],
             'sales_channel'           => ['required', 'in:online_only,in_store_only,both'],
             'discount_value' => ['nullable', 'integer', 'min:0', 'required_with:discount_type'],
             'discount_type' => ['nullable', 'in:percent,fixed', 'required_with:discount_value'],

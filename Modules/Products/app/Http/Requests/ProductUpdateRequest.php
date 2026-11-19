@@ -17,7 +17,7 @@ class ProductUpdateRequest extends FormRequest
             'main_image'       => ['nullable', 'max:1024'],
             'meta_title'       => ['nullable', 'string', 'max:255'],
             'meta_description' => ['nullable', 'string', 'max:255'],
-            'status'           => ['nullable', 'in:draft,published,unpublished'],
+            'status'           => ['nullable', 'in:draft,published,unpublished,trash'],
             'sales_channel'           => ['nullable', 'in:online_only,in_store_only,both'],
             'discount_value' => ['nullable', 'integer', 'min:0', 'required_with:discount_type'],
             'discount_type' => ['nullable', 'in:percent,fixed', 'required_with:discount_value'],
