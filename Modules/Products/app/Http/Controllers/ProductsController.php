@@ -691,4 +691,79 @@ class ProductsController extends Controller
             ]
         ]);
     }
+    /**
+     * انتقال محصول به زباله‌دان (تغییر وضعیت به trash)
+     */
+    public function moveToTrash(Product $product, NotificationService $notifications)
+    {
+        if ($product->status === 'trash') {
+            return response()->json([
+                'success' => false,
+                'message' => 'این محصول قبلاً به زباله‌دان منتقل شده است',
+            ], 422);
+        }
+
+        $product->update(['status' => 'trash']);
+
+        $notifications->create(
+            "انتقال به زباله‌دان",
+            "محصول {$product->title} به زباله‌دان منتقل شد",
+            "notification_product",
+            ['product' => $product->id]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'محصول به زباله‌دان منتقل شد',
+            'data'    => $product,
+        ]);
+    }
+
+    /**
+     * بازگرداندن محصول از زباله‌دان به پیش‌نویس
+     */
+    public function restoreFromTrash(Product $product, NotificationService $notifications)
+    {
+        if ($product->status !== 'trash') {
+            return response()->json([
+                'success' => false,
+                'message' => 'این محصول در زباله‌دان نیست',
+            ], 422);
+        }
+
+        $product->update([
+            'status'       => 'draft',
+            'published_at' => null,
+        ]);
+
+        $notifications->create(
+            "بازگردانی محصول",
+            "محصول {$product->title} از زباله‌دان بازگردانده شد",
+            "notification_product",
+            ['product' => $product->id]
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'محصول با موفقیت بازگردانده شد',
+            'data'    => $product,
+        ]);
+    }
+
+    /**
+     * لیست محصولات زباله‌دان
+     */
+    public function trashIndex(Request $request)
+    {
+        $query = Product::with(['categories', 'images', 'variants.values'])
+            ->where('status', 'trash');
+
+        if ($search = $request->get('search')) {
+            $query->where('title', 'like', "%{$search}%");
+        }
+
+        $products = $query->orderBy('updated_at', 'desc')->paginate(15);
+
+        return response()->json($products);
+    }
 }

@@ -5,6 +5,9 @@ use Modules\Products\Http\Controllers\ProductsController;
 use Modules\Products\Http\Controllers\ProductVariantController;
 
 Route::middleware(['auth:sanctum'])->prefix('v1/admin')->group(function () {
+    Route::get('products-trash', [ProductsController::class, 'trashIndex'])->name('products-trash');
+    Route::patch('products/{product}/trash', [ProductsController::class, 'moveToTrash'])->name('products-move-to-trash');
+    Route::patch('products/{product}/restore', [ProductsController::class, 'restoreFromTrash'])->name('products-restore');
     Route::apiResource('products', ProductsController::class)->names('products');
     Route::get('products-search', [ProductsController::class, 'productSearchAdmin'])->name('products-search-admin');
     Route::post('products-variants/{product}/update-all', [ProductVariantController::class, 'updateAll']);
