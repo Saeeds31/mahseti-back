@@ -24,7 +24,7 @@ class ProductsController extends Controller
     // لیست محصولات
     public function index(Request $request)
     {
-        $query = Product::with(['categories', 'images', 'variants.values']);
+        $query = Product::with(['categories', 'images', 'variants.values'])->where('status', '!=', 'trash');
 
         // جستجو
         if ($search = $request->get('search')) {
@@ -417,6 +417,7 @@ class ProductsController extends Controller
     {
         $query = Product::with(['categories', 'variants.values.attribute'])
             ->where('status', '!=', 'draft')
+            ->where('status', '!=', 'trash')
             ->where('price', '>', 0);
 
         if ($search = $request->get('search')) {
@@ -522,6 +523,7 @@ class ProductsController extends Controller
             'comments'
         ])
             ->withCount('variants')
+            ->whereNotIn('status', ['draft', 'trash'])
             ->whereIn('sales_channel', ['online_only', 'both'])
             ->findOrFail($id);
 
@@ -660,7 +662,8 @@ class ProductsController extends Controller
     }
     public function similar($id)
     {
-        $product = Product::with('categories:id')->findOrFail($id);
+        $product = Product::with('categories:id')
+            ->whereNotIn('status', ['draft', 'trash'])->findOrFail($id);
         // گرفتن ID دسته‌ها
         $categoryIds = $product->categories->pluck('id');
         // پیدا کردن محصولات مشابه
