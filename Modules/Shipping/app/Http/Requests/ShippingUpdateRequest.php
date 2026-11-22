@@ -18,6 +18,7 @@ class ShippingUpdateRequest extends FormRequest
             'priority'  => ['sometimes', 'integer'],
             'cost' => ['sometimes', 'integer', 'min:0'],
             'status'       => ['sometimes', 'boolean'],
+            'is_free'       => ['sometimes', 'boolean'],
             'conditions' => 'nullable|array',
             'conditions.*.condition' => 'nullable|string',
             'conditions.*.type'  => 'nullable|string',

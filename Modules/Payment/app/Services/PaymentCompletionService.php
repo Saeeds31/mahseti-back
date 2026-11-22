@@ -5,6 +5,7 @@ namespace Modules\Payment\Services;
 use App\Services\SmsService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Modules\Campaign\Services\CampaignService;
 use Modules\Gateway\Models\GatewayTransaction;
 use Modules\Notifications\Services\NotificationService;
 use Modules\Orders\Models\Order;
@@ -17,6 +18,8 @@ class PaymentCompletionService
         protected WalletService $walletService,
         protected NotificationService $notificationService,
         protected SmsService $smsService,
+        protected CampaignService $campaignService,
+
     ) {}
 
     public function complete(
@@ -85,13 +88,15 @@ class PaymentCompletionService
     ): void {
 
         if ($order->status === 'paid') {
+            $this->recordCampaign($order);   // سفارش کیف‌پولی که از قبل paid شده
+
             return;
         }
         $order->update([
             'payment_status' => 'paid',
             'status' => $order->status === 'reserved' ? 'reserved' : 'paid',
         ]);
-
+        $this->recordCampaign($order);
         $user = $order->user;
 
         try {
@@ -151,5 +156,14 @@ class PaymentCompletionService
             $order,
             null
         );
+    }
+
+    private function recordCampaign(Order $order): void
+    {
+        try {
+            $this->campaignService->recordOrder($order->fresh());
+        } catch (\Throwable $e) {
+            Log::channel('payment')->error("Order #{$order->id} campaign record failed: " . $e->getMessage());
+        }
     }
 }

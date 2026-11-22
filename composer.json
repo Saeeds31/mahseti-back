@@ -46,6 +46,7 @@
             "Modules\\Notifications\\": "Modules/Notifications/app/",
             "Modules\\Specifications\\": "Modules/Specifications/app/",
             "Modules\\Reports\\": "Modules/Reports/app/",
+            "Modules\\Campaign\\": "Modules/Campaign/app/",
             "Modules\\StockAlerts\\": "Modules/StockAlerts/app/",
             "Modules\\Dashboard\\": "Modules/Dashboard/app/",
             "Modules\\CardTransfer\\": "Modules/CardTransfer/app/",

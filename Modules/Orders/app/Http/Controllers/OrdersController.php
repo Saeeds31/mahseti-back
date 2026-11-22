@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Modules\Addresses\Models\Address;
+use Modules\Campaign\Services\CampaignService;
 use Modules\Cart\Models\Cart;
 use Modules\Coupons\Models\Coupon;
 use Modules\Coupons\Services\CouponService;
@@ -37,6 +38,7 @@ class OrdersController extends Controller
         protected PaymentCompletionService $paymentCompletionService,
         protected NotificationService $notifications,
         protected SmsService $smsService,
+        protected CampaignService $campaignService
     ) {}
 
     /**
@@ -550,7 +552,7 @@ class OrdersController extends Controller
             // ================================================================
             $order->status = $newStatus;
             $order->save();
-
+            $this->campaignService->recordOrder($order);
             // ================================================================
             // 4) به‌روزرسانی وضعیت فرزندان (یک سطح)
             // ================================================================
@@ -723,12 +725,14 @@ class OrdersController extends Controller
             $coupon = $couponResult['coupon'];
         }
 
-        // 6. محاسبه هزینه حمل و نقل
-        $shippingMethod = Shipping::findOrFail($request->shipping_id);
+        // 6. کمپین فعال (بر اساس جمع سبد بدون حمل)
+        $campaignResult   = $this->campaignService->resolve($subtotal);
+        $campaignApplied  = $campaignResult && $campaignResult['applied'];
+        $campaignDiscount = $campaignApplied ? $campaignResult['discount_amount'] : 0;
 
+        // 6.1 سفارش رزرو والد (در صورت وجود)
         $reservationOrderId = $request->get('parent_order_id');
         $reservationOrder = null;
-        $shippingCost = 0;
         if ($reservationOrderId) {
             $reservationOrder = Order::where('id', $reservationOrderId)
                 ->where('user_id', $user->id)
@@ -737,34 +741,39 @@ class OrdersController extends Controller
                 ->with(['shipping', 'address'])
                 ->first();
         }
-        if ($reservationOrder) {
-            $selectdShipping = Shipping::find($request->shipping_id);
-            if (!$selectdShipping) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'روش حمل معتبر نیست'
-                ], 400);
-            }
-            $shippingCost = $selectdShipping->cost - $reservationOrder->shipping_cost;
+
+        // 6.2 روش حمل و هزینه
+        $freeMethod = Shipping::systemFree()->where('status', 1)->first();
+
+        if (!$reservationOrder && $campaignApplied && $campaignResult['free_shipping'] && $freeMethod) {
+            // ★ ارسال رایگان کمپین: بدون توجه به انتخاب کاربر، روش رایگان اجباری است
+            $shippingMethod = $freeMethod;
+            $shippingCost   = 0;
         } else {
+            $shippingMethod = Shipping::find($request->shipping_id);
 
-            $shipping = Shipping::find($request->shipping_id);
-
-            if (!$shipping) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'روش حمل معتبر نیست'
-                ], 400);
+            if (!$shippingMethod) {
+                return response()->json(['success' => false, 'message' => 'روش حمل معتبر نیست'], 400);
             }
-            $shippingCost = (new ShippingService)->calculateCost(
-                $request->shipping_id,
-                $address->province_id,
-                $address->city_id,
-                $subtotal
-            );
+            // روش سیستمی فقط توسط کمپین قابل استفاده است
+            if ($shippingMethod->is_system) {
+                return response()->json(['success' => false, 'message' => 'این روش حمل برای سفارش شما مجاز نیست'], 422);
+            }
+
+            if ($reservationOrder) {
+                $shippingCost = $shippingMethod->cost - $reservationOrder->shipping_cost;
+            } else {
+                $shippingCost = (new ShippingService)->calculateCost(
+                    $request->shipping_id,
+                    $address->province_id,
+                    $address->city_id,
+                    $subtotal
+                );
+            }
         }
+
         // 7. جمع نهایی
-        $total = $subtotal - $discountAmount + $shippingCost;
+        $total = max(0, $subtotal - $discountAmount - $campaignDiscount + $shippingCost);
 
         // 8. بررسی موجودی کیف پول
         $walletBalance = $user->wallet?->balance ?? 0;
@@ -806,7 +815,10 @@ class OrdersController extends Controller
             $address,
             $user_note,
             $reservationType,
-            $reservedUntil
+            $reservedUntil,
+            $campaignResult,
+            $campaignApplied,
+            $campaignDiscount
         ) {
             // ================================================================
             // مرحله 1: قفل کردن و بررسی موجودی همه تنوع‌ها
@@ -885,6 +897,9 @@ class OrdersController extends Controller
                 'reservation_type' => $reservationType,
                 'reserved_until' => $reservedUntil,
                 'parent_order_id' => $parentOrderId,
+                'campaign_id'              => $campaignApplied ? $campaignResult['campaign_id'] : null,
+                'campaign_tier_id'         => $campaignApplied ? $campaignResult['tier_id'] : null,
+                'campaign_discount_amount' => $campaignDiscount,
             ]);
 
             // ================================================================
@@ -981,6 +996,9 @@ class OrdersController extends Controller
             // ================================================================
 
             if ($reservationType !== 'none') {
+                if ($order->payment_status === 'paid') {
+                    $this->campaignService->recordOrder($order);
+                }
                 return response()->json([
                     'order' => $order->load('items'),
                     'status' => 'reserved',
@@ -1056,7 +1074,7 @@ class OrdersController extends Controller
 
         foreach ($cartItems as $item) {
 
-            $subtotal += $item->price_original * $item->quantity;
+            $subtotal += $item->price_final * $item->quantity;
 
             // مقدار تخفیف محصول = قیمت اصلی - قیمت بعد تخفیف
             if ($item->price_final != $item->price_original) {
@@ -1068,13 +1086,13 @@ class OrdersController extends Controller
             }
         }
 
+        // 4) کمپین + هزینه حمل
+        $campaignResult   = $this->campaignService->resolve($subtotal - $productDiscount);
+        $campaignApplied  = $campaignResult && $campaignResult['applied'];
+        $campaignDiscount = $campaignApplied ? $campaignResult['discount_amount'] : 0;
 
-        // --------------------------------------------------------
-        // 4) محاسبه هزینه حمل
-        // --------------------------------------------------------
         $reservationOrderId = $request->get('reservation_order_id');
         $reservationOrder = null;
-        $shippingCost = 0;
         if ($reservationOrderId) {
             $reservationOrder = Order::where('id', $reservationOrderId)
                 ->where('user_id', $user->id)
@@ -1083,32 +1101,28 @@ class OrdersController extends Controller
                 ->with(['shipping', 'address'])
                 ->first();
         }
-        if ($reservationOrder) {
-            $shipping = Shipping::find($request->shipping_id);
-            if (!$shipping) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'روش حمل معتبر نیست'
-                ], 400);
-            }
-            $shippingCost = $shipping->cost - $reservationOrder->shipping_cost;
+
+        $freeMethod = Shipping::systemFree()->where('status', 1)->first();
+
+        if (!$reservationOrder && $campaignApplied && $campaignResult['free_shipping'] && $freeMethod) {
+            $shipping = $freeMethod;
+            $shippingCost = 0;
         } else {
-
             $shipping = Shipping::find($request->shipping_id);
-
             if (!$shipping) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'روش حمل معتبر نیست'
-                ], 400);
+                return response()->json(['success' => false, 'message' => 'روش حمل معتبر نیست'], 400);
             }
-
-            $shippingCost = (new ShippingService)->calculateCost(
-                $request->shipping_id,
-                $address->province_id,
-                $address->city_id,
-                $subtotal
-            );
+            if ($shipping->is_system) {
+                return response()->json(['success' => false, 'message' => 'این روش حمل برای سفارش شما مجاز نیست'], 422);
+            }
+            $shippingCost = $reservationOrder
+                ? $shipping->cost - $reservationOrder->shipping_cost
+                : (new ShippingService)->calculateCost(
+                    $request->shipping_id,
+                    $address->province_id,
+                    $address->city_id,
+                    $subtotal
+                );
         }
 
 
@@ -1144,8 +1158,7 @@ class OrdersController extends Controller
         // --------------------------------------------------------
         // 6) مبلغ پرداختی
         // --------------------------------------------------------
-        $payable = max(0, $subtotal - $productDiscount - $couponDiscount + $shippingCost);
-
+        $payable = max(0, $subtotal - $productDiscount - $couponDiscount - $campaignDiscount + $shippingCost);
         return response()->json([
             'success' => true,
             'reservationOrder' => $reservationOrder,
@@ -1153,10 +1166,11 @@ class OrdersController extends Controller
                 'subtotal'          => (int)$subtotal,
                 'product_discount'  => (int)$productDiscount,
                 'shipping_cost'     => (int)$shippingCost,
+                'campaign_discount' => (int) $campaignDiscount,
                 'coupon_discount'   => (int)$couponDiscount,
                 'payable_amount'    => (int)$payable,
             ],
-
+            'campaign' => $campaignApplied ? $campaignResult : null,
             'address' => $address,
             'wallet' => $user->wallet,
             'shipping_method' => [

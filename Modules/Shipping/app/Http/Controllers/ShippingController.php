@@ -5,6 +5,7 @@ namespace Modules\Shipping\Http\Controllers;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Modules\Addresses\Models\Address;
+use Modules\Campaign\Services\CampaignService;
 use Modules\Cart\Models\Cart;
 use Modules\Notifications\Services\NotificationService;
 use Modules\Orders\Models\Order;
@@ -20,6 +21,8 @@ class ShippingController extends Controller
 
     public function __construct(
         protected ShippingService $shippingService,
+        protected CampaignService $campaignService,
+
     ) {}
     /**
      * ذخیره ترتیب روش‌های حمل و نقل بر اساس priority
@@ -60,15 +63,20 @@ class ShippingController extends Controller
     public function store(ShippingStoreRequest $request, NotificationService $notifications)
     {
         $data = $request->validated();
+        unset($data['is_system']);               // هیچ‌وقت از بیرون ساخته نمی‌شود
+
+        if (!empty($data['is_free'])) {
+            $data['cost'] = 0;                   // روش رایگان همیشه هزینه صفر دارد
+        }
+
         $Shipping = Shipping::create($data);
-        if (!empty($data['conditions'])) {
-            foreach ($data['conditions'] as $condition) {
-                $condition = $Shipping->conditions()->create([
-                    'condition'   => $condition['condition'] ?? "total",
-                    'type' => $condition['type'] ?? "==",
-                    'value' => $condition['value'] ?? 0,
-                ]);
-            }
+
+        foreach (($data['conditions'] ?? []) as $condition) {
+            $Shipping->conditions()->create([
+                'condition' => $condition['condition'] ?? 'total',
+                'type'      => $condition['type'] ?? '==',
+                'value'     => $condition['value'] ?? 0,
+            ]);
         }
 
         $notifications->create(
@@ -77,11 +85,8 @@ class ShippingController extends Controller
             "notification_order",
             ['shipping' => $Shipping->id]
         );
-        return response()->json([
-            'success' => true,
-            'message' => 'روش حمل و نقل ثبت شد',
-            'data'    => $Shipping
-        ], 201);
+
+        return response()->json(['success' => true, 'message' => 'روش حمل و نقل ثبت شد', 'data' => $Shipping], 201);
     }
 
     /**
@@ -102,47 +107,57 @@ class ShippingController extends Controller
     public function update(ShippingUpdateRequest $request, Shipping $shippingMethod, NotificationService $notifications)
     {
         $data = $request->validated();
+        unset($data['is_system']);
+
+        // ── روش سیستمی: فقط ظاهر قابل ویرایش است ──
+        if ($shippingMethod->is_system) {
+            $shippingMethod->update([
+                'title'       => $data['title'] ?? $shippingMethod->title,
+                'description' => $data['description'] ?? $shippingMethod->description,
+                'icon'        => $data['icon'] ?? $shippingMethod->icon,
+                'priority'    => $data['priority'] ?? $shippingMethod->priority,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'روش سیستمی فقط در عنوان، توضیحات، آیکن و اولویت قابل ویرایش است',
+                'data'    => $shippingMethod,
+            ]);
+        }
+
+        if (!empty($data['is_free'])) {
+            $data['cost'] = 0;
+        }
+
         $shippingMethod->update($data);
+
         $conditions = $data['conditions'] ?? [];
-        $sentConditionIds =  collect($conditions)
-            ->pluck('id')
-            ->filter()
-            ->toArray();
+        $sentIds = collect($conditions)->pluck('id')->filter()->toArray();
 
-        $shippingMethod->conditions()
-            ->whereNotIn('id', $sentConditionIds)
-            ->delete();
+        $shippingMethod->conditions()->whereNotIn('id', $sentIds)->delete();
 
-        foreach ($data['conditions'] as $conditionData) {
+        foreach ($conditions as $conditionData) {   // (قبلاً روی $data['conditions'] بود و بدون شرط خطا می‌داد)
+            $payload = [
+                'condition' => $conditionData['condition'] ?? 'total',
+                'type'      => $conditionData['type'] ?? '==',
+                'value'     => $conditionData['value'] ?? 0,
+            ];
             if (!empty($conditionData['id'])) {
-                $condition = Condition::where('shipping_id', $shippingMethod->id)
-                    ->where('id', $conditionData['id'])
-                    ->firstOrFail();
-
-                $condition->update([
-                    'condition'   => $conditionData['condition'] ?? "total",
-                    'type' => $conditionData['type'] ?? "==",
-                    'value' => $conditionData['value'] ?? 0,
-                ]);
+                Condition::where('shipping_id', $shippingMethod->id)
+                    ->where('id', $conditionData['id'])->firstOrFail()->update($payload);
             } else {
-                $condition = $shippingMethod->conditions()->create([
-                    'condition'   => $conditionData['condition'] ?? "total",
-                    'type' => $conditionData['type'] ?? "==",
-                    'value' => $conditionData['value'] ?? 0,
-                ]);
+                $shippingMethod->conditions()->create($payload);
             }
         }
+
         $notifications->create(
             "ویرایش روش حمل و نقل",
             "روش حمل و نقل {$shippingMethod->title} در سیستم ویرایش شد",
             "notification_order",
             ['shipping' => $shippingMethod->id]
         );
-        return response()->json([
-            'success' => true,
-            'message' => 'روش حمل و نقل به روز رسانی شد',
-            'data'    => $shippingMethod
-        ]);
+
+        return response()->json(['success' => true, 'message' => 'روش حمل و نقل به روز رسانی شد', 'data' => $shippingMethod]);
     }
 
     /**
@@ -151,6 +166,12 @@ class ShippingController extends Controller
     public function destroy($id, NotificationService $notifications)
     {
         $shippingMethod = Shipping::findOrFail($id);
+        if ($shippingMethod->is_system) {
+            return response()->json([
+                'success' => false,
+                'message' => 'روش حمل سیستمی قابل حذف نیست',
+            ], 403);
+        }
         $order = Order::where('shipping_id', $shippingMethod->id)->exists();
         if ($order) {
             return response()->json([
@@ -182,6 +203,7 @@ class ShippingController extends Controller
         $address = Address::with(['province', 'city'])->findOrFail($addressId);
 
         $shippings = Shipping::with('conditions')->where('status', 1)
+            ->where('is_system', false)
             ->orderBy('priority', 'asc')
             ->get();
 
@@ -334,6 +356,7 @@ class ShippingController extends Controller
             $shippings = Shipping::with('conditions')
                 ->when($reservationShippingId, fn($q) => $q->where('id', '!=', $reservationShippingId))
                 ->whereIn('status', [1, '1', true])
+                ->where('is_system', false)
                 ->orderBy('priority', 'asc')
                 ->get();
             $available = [];
@@ -424,12 +447,41 @@ class ShippingController extends Controller
                 'reservation_method_invalid' => true,
             ]);
         }
+        // =====================================================
+        // 5.5) کمپین فعال: ارسال رایگان اجباری
+        // =====================================================
+        $campaign = $this->campaignService->resolve($subTotal);
 
+        if (!$reservationOrder && $campaign && $campaign['applied'] && $campaign['free_shipping']) {
+            $freeMethod = Shipping::systemFree()->where('status', 1)->first();
+
+            if ($freeMethod) {
+                return response()->json([
+                    'success' => true,
+                    'methods' => [[
+                        'id'                    => $freeMethod->id,
+                        'name'                  => $freeMethod->title,
+                        'description'           => $freeMethod->description,
+                        'icon'                  => $freeMethod->icon,
+                        'cost'                  => 0,
+                        'is_reservation_method' => false,
+                        'is_available'          => true,
+                        'is_campaign_free'      => true,
+                        'message'               => "ارسال رایگان به مناسبت «{$campaign['campaign_name']}»",
+                    ]],
+                    'subTotal'        => $subTotal,
+                    'message'         => 'ارسال رایگان کمپین',
+                    'has_reservation' => false,
+                    'campaign'        => $campaign,
+                ]);
+            }
+        }
         // =====================================================
         // 6) حالت عادی (بدون رزرو)
         // =====================================================
         $shippings = Shipping::with('conditions')->where('status', 1)
             ->orderBy('priority', 'asc')
+            ->where('is_system', false)
             ->get();
         $available = [];
 
@@ -533,6 +585,7 @@ class ShippingController extends Controller
         return response()->json([
             'success' => true,
             'methods' => $available,
+            'campaign' => $campaign,
             'subTotal' => $subTotal,
             'message' => 'لیست روش های حمل و نقل',
             'has_reservation' => false,
@@ -599,6 +652,7 @@ class ShippingController extends Controller
                 // اگر روش رزرو معتبر نیست، همه روش‌ها را با محاسبه تفاوت برگردان
                 $shippings = Shipping::with('conditions')
                     ->where('status', 1)
+                    ->where('is_system', false)
                     ->get();
 
                 $available = [];
@@ -645,6 +699,7 @@ class ShippingController extends Controller
         // حالت عادی (بدون رزرو)
         $shippings = Shipping::with('conditions')
             ->where('status', 1)
+            ->where('is_system', false)
             ->orderBy('priority', 'asc')
             ->get();
 

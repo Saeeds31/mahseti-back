@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Modules\Addresses\Models\Address;
+use Modules\Campaign\Services\CampaignService;
 use Modules\CardTransfer\Models\CardTransferReceipt;
 use Modules\Cart\Models\Cart;
 use Modules\Orders\Models\Order;
@@ -23,12 +24,17 @@ class CardTransferController extends Controller
 {
     protected ProductStockService $productStockService;
     protected SmsService $smsService;
+    protected CampaignService $campaignService;
 
 
-    public function __construct(ProductStockService $productStockService, SmsService $smsService)
-    {
+    public function __construct(
+        ProductStockService $productStockService,
+        SmsService $smsService,
+        CampaignService $campaignService
+    ) {
         $this->productStockService = $productStockService;
         $this->smsService = $smsService;
+        $this->campaignService = $campaignService;
     }
     /**
      * لیست رسیدهای کارت به کارت برای ادمین
@@ -142,17 +148,39 @@ class CardTransferController extends Controller
             $coupon = $couponResult['coupon'];
         }
 
-        // محاسبه هزینه حمل و نقل
-        $shippingMethod = Shipping::findOrFail($request->shipping_id);
-        $shippingCost = (new ShippingService)->calculateCost(
-            $request->shipping_id,
-            $address->province_id,
-            $address->city_id,
-            $subtotal
-        );
+        // کمپین فعال (بر اساس جمع سبد بدون حمل)
+        $campaignResult   = $this->campaignService->resolve($subtotal);
+        $campaignApplied  = $campaignResult && $campaignResult['applied'];
+        $campaignDiscount = $campaignApplied ? $campaignResult['discount_amount'] : 0;
+
+        // روش حمل و هزینه
+        $freeMethod = Shipping::systemFree()->where('status', 1)->first();
+
+        if ($campaignApplied && $campaignResult['free_shipping'] && $freeMethod) {
+            // ★ ارسال رایگان کمپین: بدون توجه به انتخاب کاربر، اجباری است
+            $shippingMethod = $freeMethod;
+            $shippingCost   = 0;
+        } else {
+            $shippingMethod = Shipping::findOrFail($request->shipping_id);
+
+            // روش سیستمی فقط توسط کمپین قابل استفاده است
+            if ($shippingMethod->is_system) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'این روش حمل برای سفارش شما مجاز نیست',
+                ], 422);
+            }
+
+            $shippingCost = (new ShippingService)->calculateCost(
+                $request->shipping_id,
+                $address->province_id,
+                $address->city_id,
+                $subtotal
+            );
+        }
 
         // محاسبه مبلغ نهایی
-        $total = $subtotal - $discountAmount + $shippingCost;
+        $total = max(0, $subtotal - $discountAmount - $campaignDiscount + $shippingCost);
         // ================================================================
         // ★ شروع تراکنش با قفل کامل ★
         // ================================================================
@@ -168,6 +196,9 @@ class CardTransferController extends Controller
             $coupon,
             $shippingMethod,
             $address,
+            $campaignResult,
+            $campaignApplied,
+            $campaignDiscount
         ) {
             // گرفتن ID همه تنوع‌ها
             $variantIds = $cartItems->pluck('variant.id')->unique()->toArray();
@@ -203,10 +234,13 @@ class CardTransferController extends Controller
                 'discount_amount' => $discountAmount,
                 'shipping_cost' => $shippingCost,
                 'total' => $total,
-                'source'=>'website',
+                'source' => 'website',
                 'payment_method' => 'card_transfer',
                 'payment_status' => 'pending',
                 'status' => 'card_transfer_pending',
+                'campaign_id'              => $campaignApplied ? $campaignResult['campaign_id'] : null,
+                'campaign_tier_id'         => $campaignApplied ? $campaignResult['tier_id'] : null,
+                'campaign_discount_amount' => $campaignDiscount,
             ]);
 
             // ثبت آیتم‌ها و کم کردن موجودی
@@ -382,7 +416,13 @@ class CardTransferController extends Controller
                     'status' => 'paid',
                     'payment_status' => 'paid'
                 ]);
-
+                try {
+                    $this->campaignService->recordOrder($receipt->order->fresh());
+                } catch (\Throwable $e) {
+                    Log::error('Campaign record failed for order ' . $receipt->order->id, [
+                        'error' => $e->getMessage(),
+                    ]);
+                }
                 try {
                     $this->smsService->sendToKavenegar(
                         'approvedcardtocardrecieptcustomer',

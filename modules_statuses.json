@@ -31,5 +31,6 @@
     "Pos": true,
     "StockAlerts": true,
     "CardTransfer": true,
-    "Channel": true
+    "Channel": true,
+    "Campaign": true
 }
