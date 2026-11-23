@@ -39,7 +39,10 @@ class Order extends Model
         'reserved_until',
         'parent_order_id',
         'source',
-        'external_order_id'
+        'external_order_id',
+        'campaign_id',
+        'campaign_tier_id',
+        'campaign_discount_amount'
     ];
 
     // #status: pending, reserved, paid, shipped, completed, canceled, returned
