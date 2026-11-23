@@ -120,6 +120,9 @@ class OrdersController extends Controller
 
             $query->where(function ($q) use ($search) {
                 $q->where('id', 'like', "%{$search}%")
+                    ->orWhereHas('childOrders', function ($cq) use ($search) {
+                        $cq->where('id', 'like', "%{$search}%");
+                    })
                     ->orWhereHas('user', function ($uq) use ($search) {
                         $uq->where('full_name', 'like', "%{$search}%")
                             ->orWhere('mobile', 'like', "%{$search}%");
@@ -448,6 +451,39 @@ class OrdersController extends Controller
                     ], 422);
                 }
 
+                // ★ بررسی موجودی محصولات (قبل از هر تغییری)
+                $variantsToDeduct = [];
+                $stockErrors = [];
+
+                // اگر یک واریانت در چند آیتم تکرار شده باشد، تعدادها جمع می‌شوند
+                foreach ($order->items->groupBy('variant_id') as $variantId => $items) {
+                    $needed = (int) $items->sum('quantity');
+
+                    // قفل ردیف برای جلوگیری از رقابت همزمان
+                    $variant = $items->first()->variant()->lockForUpdate()->first();
+
+                    if (!$variant) {
+                        $stockErrors[] = "یکی از محصولات سفارش (تنوع #{$variantId}) یافت نشد";
+                        continue;
+                    }
+
+                    if ($variant->stock < $needed) {
+                        $name = $variant->product?->name ?? "تنوع #{$variant->id}";
+                        $stockErrors[] = "«{$name}» موجودی کافی ندارد (موجودی: {$variant->stock} - درخواستی: {$needed})";
+                        continue;
+                    }
+
+                    $variantsToDeduct[] = ['variant' => $variant, 'quantity' => $needed];
+                }
+
+                if (!empty($stockErrors)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'تایید سفارش ممکن نیست: ' . implode(' | ', $stockErrors),
+                        'errors'  => $stockErrors,
+                    ], 422);
+                }
+
                 // ایجاد کیف پول در صورت نبود
                 if (empty($user->wallet)) {
                     Wallet::create([
@@ -457,10 +493,8 @@ class OrdersController extends Controller
                     $user->load('wallet');
                 }
 
-                // ★ فقط مبلغ سفارش والد
                 $totalAmount = $order->total;
 
-                // بررسی موجودی
                 if ($user->wallet->balance < $totalAmount) {
                     return response()->json([
                         'success' => false,
@@ -475,7 +509,6 @@ class OrdersController extends Controller
                 $user->wallet->decrement('balance', $totalAmount);
                 $user->wallet->refresh();
 
-                // ثبت تراکنش
                 $user->wallet->transactions()->create([
                     'type' => 'debit',
                     'order_id' => $order->id,
@@ -485,12 +518,16 @@ class OrdersController extends Controller
                     'balance_after' => $user->wallet->balance,
                 ]);
 
-                // آپدیت فیلدهای پرداخت فقط برای والد
+                // ★ کسر موجودی محصولات
+                foreach ($variantsToDeduct as $row) {
+                    $row['variant']->decrement('stock', $row['quantity']);
+                    $this->productStockService->sync($row['variant']->product);
+                }
+
                 $order->payment_status = 'paid';
                 $order->payment_method = 'wallet';
-                $order->wallet_payment =  $totalAmount;
+                $order->wallet_payment = $totalAmount;
             }
-
             // ================================================================
             // 2) تغییر وضعیت به canceled/failed/returned → لغو والد + فرزندان paid
             // ================================================================

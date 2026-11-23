@@ -188,6 +188,8 @@ class ProductsController extends Controller
             // موجودی محصول رو به این واریانت بده
             $simpleVariant->update([
                 'stock' => $product->stock,
+                'price' => $product->price ?? $simpleVariant->price,
+                'sku'   => $product->sku,
             ]);
             $this->productStockService->sync($product);
             return;
@@ -352,13 +354,23 @@ class ProductsController extends Controller
     public function search(Request $request)
     {
         $query = Product::with(['categories'])
+            ->where('status', 'published')
             ->whereIn('sales_channel', ['online_only', 'both']);
-        if ($search = $request->get('search')) {
-            $query->where(function ($q) use ($search) {
-                $q->where('title', 'like', "%{$search}%");
+
+        if ($search = trim((string) $request->get('search'))) {
+            // نرمال‌سازی: فاصله‌های اضافی، ی/ک عربی، نیم‌فاصله
+            $search = str_replace(['ي', 'ك', "\u{200C}"], ['ی', 'ک', ' '], $search);
+            $words = array_filter(preg_split('/\s+/u', $search));
+
+            $query->where(function ($q) use ($words) {
+                foreach ($words as $word) {
+                    $q->where('title', 'like', "%{$word}%");
+                }
             });
         }
+
         $products = $query->take(15)->get();
+
         return response()->json($products);
     }
 
