@@ -8,6 +8,8 @@ use Modules\Addresses\Models\Address;
 use Modules\Users\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Modules\Campaign\Models\Campaign;
+use Modules\Campaign\Models\CampaignTier;
 use Modules\CardTransfer\Models\CardTransferReceipt;
 use Modules\Coupons\Models\Coupon;
 use Modules\Gateway\Models\GatewayTransaction;
@@ -90,6 +92,16 @@ class Order extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function campaign()
+    {
+        return $this->belongsTo(Campaign::class);
+    }
+    
+    public function campaignTier()
+    {
+        return $this->belongsTo(CampaignTier::class);
     }
 
     public function coupon()
@@ -187,6 +199,8 @@ class Order extends Model
             'address.province',
             'address.city',
             'shipping',
+            'campaign',
+            'campaignTier',
             'gatewayTransactions',
             'items.product',
             'items.variant.values',
